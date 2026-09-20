@@ -101,7 +101,7 @@ all three services (`create_schedule`, `edit_schedule`, `remove_schedule`).
 - New steps are saved with **no `step_id`** so the backend allocates one; see
   `allocate_step_ids` in the integration for why positional ids collide.
 
-## HACS adds a SECOND resource, it does not update the first
+## Check for duplicate Lovelace resources after a HACS update
 
 After `ha_manage_hacs` downloaded v0.8.0, Lovelace had **two** resources:
 `sb-scheduler-card.js?hacstag=…070` and `…080`. The browser loaded the module
@@ -110,7 +110,10 @@ twice and the second `customElements.define` threw
 same file so behaviour was still correct, but a browser holding the old URL
 would serve stale code.
 
-Check after every HACS update and delete the stale one over the websocket:
+The v0.8.0 → v0.9.0 download then updated the single resource **in place**, so
+this is not "HACS always duplicates" — the stray was most likely the original
+hand-added resource sitting alongside the HACS-managed one. Still worth a check
+after an update, because the symptom is only a console error:
 
 ```
 lovelace/resources        -> find duplicates
