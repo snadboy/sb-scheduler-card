@@ -1,4 +1,4 @@
-/* SB Scheduler Card — v0.9.0
+/* SB Scheduler Card — v0.9.1
  *
  * A full editor for sb_scheduler schedules: create, delete, and edit name,
  * day-set, steps (add/remove), time patterns and ACTIONS.
@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.9.0";
+const VERSION = "0.9.1";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -544,7 +544,7 @@ class SbSchedulerCard extends HTMLElement {
           ${total > 1 ? `<button class="dropstep" data-s="${si}" title="Remove this step">✕</button>` : ""}
         </div>
 
-        <div class="field"><span>Times</span>
+        <div class="field"><span class="sect">Times</span>
           <div class="radios">
             <label><input type="radio" name="ptype${si}" data-s="${si}" value="occurrences"
               ${step.type === "occurrences" ? "checked" : ""}> At set times</label>
@@ -592,7 +592,7 @@ class SbSchedulerCard extends HTMLElement {
             <div class="count" data-s="${si}">${this._intervalCount(step)}</div>
           </div>`}
 
-        <div class="field"><span>Does</span></div>
+        <div class="field"><span class="sect">Actions</span></div>
         ${step.actions.map((a, ai) => this._actionHtml(a, si, ai)).join("")}
         <button class="addaction" data-s="${si}">+ Add an action</button>
       </div>`;
@@ -985,6 +985,9 @@ button.drop, button.dropstep, button.dropaction, button.dropfield {
   border: none; background: none; color: var(--error-color); padding: 4px 8px; }
 .field { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; }
 .field > span { color: var(--secondary-text-color); font-size: .85em; }
+/* Times and Actions are the step's two sections, not field labels like Name —
+   they carry the rows below them, so they read a size up and in full colour. */
+.field > span.sect { font-size: 1em; font-weight: 600; color: var(--primary-text-color); }
 .field.inline { flex: 1; }
 input, select { font: inherit; padding: 8px; border-radius: 6px;
                 border: 1px solid var(--divider-color);
@@ -994,8 +997,12 @@ option { background: var(--card-background-color); color: var(--primary-text-col
 .radios.small { font-size: .85em; gap: 10px; }
 .radios label { display: flex; align-items: center; gap: 6px; }
 .times { display: flex; flex-direction: column; gap: 6px; }
-.timerow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.interval { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+/* Same rail as an action: a time is a row belonging to this step, and the two
+   sections should read the same way down the left edge. */
+.timerow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+           border-left: 2px solid var(--divider-color); padding: 6px 0 6px 10px; }
+.interval { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;
+            border-left: 2px solid var(--divider-color); padding-left: 10px; }
 .count { color: var(--secondary-text-color); font-size: .85em; padding-bottom: 10px; }
 /* Each step is a card within the editor, or a multi-step schedule becomes an
    undifferentiated wall of time rows. */
