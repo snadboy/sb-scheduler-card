@@ -1,19 +1,19 @@
-/* SB Scheduler Card — v0.8.0 (edit-only, steps-aware)
+/* SB Scheduler Card — v0.9.0
  *
- * Edits existing sb_scheduler schedules: name, day-set, and each step's name
- * and time pattern. A schedule holds one or more STEPS — "Garden Lights" is one
- * schedule with an On step at sunset and an Off step at sunrise — so times and
+ * A full editor for sb_scheduler schedules: create, delete, and edit name,
+ * day-set, steps (add/remove), time patterns and ACTIONS.
+ *
+ * A schedule holds one or more STEPS — "Garden Lights" is one schedule with an
+ * On step at sunset and an Off step at sunrise — so times, actions and
  * next/last are per step, not per schedule.
  *
- * Creating schedules and editing ACTIONS are deliberately out of v1, which is
- * also why steps cannot be added here: a step with no actions does nothing.
- *
  * Needs no websocket API: schedules are read from their switch entities'
- * attributes and written back through `sb_scheduler.edit_schedule`.
+ * attributes, service metadata from `hass.services`, and everything is written
+ * through the sb_scheduler services.
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.8.0";
+const VERSION = "0.9.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -50,6 +50,47 @@ const serialiseOccurrence = (o) => {
   const h = String(Math.floor(n / 60)).padStart(2, "0");
   const m = String(n % 60).padStart(2, "0");
   return `${o.event}${o.sign}${h}:${m}:00`;
+};
+
+/* --- actions -------------------------------------------------------------
+ * Stored shape: { service, entity_id?, service_data }. Three real variants
+ * have to round-trip untouched:
+ *   light.turn_on  + entity_id + {brightness: 3}
+ *   valve.open_valve + entity_id + {}
+ *   notify.mobile_app_… + NO entity + {title, message, data: {tag, channel}}
+ * The last one is why unknown and nested values are preserved rather than
+ * rendered: editing the message must not drop the tag that makes the
+ * notification replace in place.
+ */
+const parseAction = (a) => {
+  const [domain, ...rest] = String(a?.service || "").split(".");
+  const data = { ...(a?.service_data || {}) };
+  const entity = a?.entity_id || data.entity_id || "";
+  delete data.entity_id;
+  return {
+    mode: entity ? "entity" : "service",
+    domain: domain || "",
+    service: rest.join(".") || "",
+    entity_id: entity,
+    filter: "",
+    data,
+  };
+};
+
+const serialiseAction = (a) => {
+  const out = { service: `${a.domain}.${a.service}`, service_data: { ...a.data } };
+  // service_data is ALWAYS written: the action engine subscripts it without
+  // checking, so a missing key is a KeyError when the schedule fires.
+  if (a.mode === "entity" && a.entity_id) out.entity_id = a.entity_id;
+  return out;
+};
+
+// Which simple editor a value gets. Anything else is preserved untouched.
+const valueKind = (v) => {
+  if (typeof v === "boolean") return "boolean";
+  if (typeof v === "number") return "number";
+  if (typeof v === "string") return "text";
+  return "opaque";   // objects and arrays — e.g. notify's data: {tag, channel}
 };
 
 // "06:50" -> "6:50"; a schedule time is read, not sorted, so drop the pad.
@@ -94,6 +135,16 @@ const prettyTrigger = (iso) => {
   });
 };
 
+const blankStep = () => ({
+  step_id: null,           // no id — the backend allocates a fresh one
+  name: "",
+  enabled: true,
+  type: "occurrences",
+  occurrences: [parseOccurrence("06:30")],
+  start: "09:00", stop: "17:00", every_minutes: 15,
+  actions: [],
+});
+
 class SbSchedulerCard extends HTMLElement {
   static getConfigElement() {
     return document.createElement(`${CARD}-editor`);
@@ -105,7 +156,7 @@ class SbSchedulerCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
-    this._open = null;   // schedule_id being edited
+    this._open = null;   // schedule_id being edited, or "__new__"
     this._draft = null;  // local edit state; NEVER overwritten from hass
     this._sig = null;
   }
@@ -155,11 +206,62 @@ class SbSchedulerCard extends HTMLElement {
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  /** Entities matching a filter, capped — a select of 9,000 options is unusable.
+   *  The currently chosen one is always included so it can never go missing. */
+  _entityOptions(filter, domain, chosen) {
+    const states = this._hass?.states || {};
+    const q = String(filter || "").toLowerCase().trim();
+    const out = [];
+    for (const id of Object.keys(states)) {
+      if (domain && !id.startsWith(domain + ".")) continue;
+      const name = states[id].attributes?.friendly_name || id;
+      if (q && !id.toLowerCase().includes(q) && !String(name).toLowerCase().includes(q)) continue;
+      out.push({ id, name });
+      if (out.length >= 250) break;
+    }
+    out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    if (chosen && !out.some((e) => e.id === chosen)) {
+      out.unshift({ id: chosen, name: states[chosen]?.attributes?.friendly_name || chosen });
+    }
+    return out;
+  }
+
+  _domains() {
+    return Object.keys(this._hass?.services || {}).sort();
+  }
+
+  _servicesFor(domain) {
+    const svcs = this._hass?.services?.[domain] || {};
+    const keys = Object.keys(svcs).sort();
+    // Float the verbs people actually schedule to the top of the list.
+    const first = ["turn_on", "turn_off", "toggle", "open_valve", "close_valve",
+                   "open_cover", "close_cover", "lock", "unlock", "press"];
+    return keys.sort((a, b) => {
+      const ia = first.indexOf(a), ib = first.indexOf(b);
+      if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+      return a.localeCompare(b);
+    });
+  }
+
+  /** Field names this service documents that the action has not set yet. */
+  _spareFields(action) {
+    const fields = this._hass?.services?.[action.domain]?.[action.service]?.fields || {};
+    return Object.keys(fields)
+      .filter((k) => !(k in action.data) && k !== "entity_id" && k !== "advanced_fields"
+                     && k !== "additional_fields")
+      .sort();
+  }
+
+  _fieldMeta(action, key) {
+    return this._hass?.services?.[action.domain]?.[action.service]?.fields?.[key] || {};
+  }
+
   _signature() {
     return this._schedules()
       .map((s) => `${s.schedule_id}|${s.state}|${s.day_set}|${s.friendly_name}|` +
         this._steps(s).map((t) =>
-          `${t.step_id}:${t.name}:${t.enabled}:${t.next_trigger}:${t.last_triggered}:${JSON.stringify(t.pattern)}`
+          `${t.step_id}:${t.name}:${t.enabled}:${t.next_trigger}:${t.last_triggered}` +
+          `:${JSON.stringify(t.pattern)}:${JSON.stringify(t.actions)}`
         ).join(";"))
       .join("~");
   }
@@ -170,7 +272,8 @@ class SbSchedulerCard extends HTMLElement {
     if (!s) return;
     this._open = scheduleId;
     this._draft = {
-      entity_id: s.entity_id,
+      creating: false,
+      confirmDelete: false,
       name: s.friendly_name || "",
       day_set: s.day_set || "daily",
       steps: this._steps(s).map((step) => {
@@ -185,8 +288,23 @@ class SbSchedulerCard extends HTMLElement {
           start: String(pattern.start || "09:00").slice(0, 5),
           stop: String(pattern.stop || "17:00").slice(0, 5),
           every_minutes: Number(pattern.every_minutes || 15),
+          actions: (step.actions || []).map(parseAction),
         };
       }),
+      error: null,
+    };
+    this._render();
+  }
+
+  _beginCreate() {
+    const daySets = this._daySets();
+    this._open = "__new__";
+    this._draft = {
+      creating: true,
+      confirmDelete: false,
+      name: "",
+      day_set: daySets.some((d) => d.id === "daily") ? "daily" : (daySets[0]?.id || "daily"),
+      steps: [{ ...blankStep(), name: "Run" }],
       error: null,
     };
     this._render();
@@ -203,6 +321,7 @@ class SbSchedulerCard extends HTMLElement {
     const timeOk = (t) => /^\d{1,2}:\d{2}$/.test(t) &&
       Number(t.split(":")[0]) < 24 && Number(t.split(":")[1]) < 60;
     if (!d.name.trim()) return "Name cannot be empty.";
+    if (!d.steps.length) return "A schedule needs at least one step.";
     for (const step of d.steps) {
       const where = d.steps.length > 1 ? `"${step.name || "step"}": ` : "";
       if (!step.name.trim()) return "Every step needs a name.";
@@ -222,6 +341,14 @@ class SbSchedulerCard extends HTMLElement {
           return `${where}repeat every … must be at least 1 minute.`;
         }
       }
+      // A step with no actions arms a timer that does nothing.
+      if (!step.actions.length) return `${where}add at least one action.`;
+      for (const a of step.actions) {
+        if (!a.domain || !a.service) return `${where}every action needs a service.`;
+        if (a.mode === "entity" && !a.entity_id) {
+          return `${where}${a.domain}.${a.service} needs an entity.`;
+        }
+      }
     }
     return null;
   }
@@ -234,27 +361,48 @@ class SbSchedulerCard extends HTMLElement {
       this._render();
       return;
     }
+    const steps = d.steps.map((step) => {
+      const out = {
+        name: step.name.trim(),
+        enabled: step.enabled,
+        pattern: step.type === "interval"
+          ? { type: "interval", start: step.start, stop: step.stop,
+              every_minutes: Number(step.every_minutes) }
+          : { type: "occurrences", occurrences: step.occurrences.map(serialiseOccurrence) },
+        actions: step.actions.map(serialiseAction),
+      };
+      // A new step carries no id, so the backend allocates one that cannot
+      // collide with a surviving step's.
+      if (step.step_id) out.step_id = step.step_id;
+      return out;
+    });
+
     try {
-      await this._hass.callService("sb_scheduler", "edit_schedule", {
-        schedule_id: this._open,
-        name: d.name.trim(),
-        day_set: d.day_set,
-        // Only what this card owns. The backend merges each step onto the
-        // stored one by step_id, so the actions it cannot edit are preserved.
-        steps: d.steps.map((step) => ({
-          step_id: step.step_id,
-          name: step.name.trim(),
-          enabled: step.enabled,
-          pattern: step.type === "interval"
-            ? { type: "interval", start: step.start, stop: step.stop,
-                every_minutes: Number(step.every_minutes) }
-            : { type: "occurrences",
-                occurrences: step.occurrences.map(serialiseOccurrence) },
-        })),
-      });
+      if (d.creating) {
+        await this._hass.callService("sb_scheduler", "create_schedule", {
+          name: d.name.trim(), day_set: d.day_set, steps,
+        });
+      } else {
+        await this._hass.callService("sb_scheduler", "edit_schedule", {
+          schedule_id: this._open, name: d.name.trim(), day_set: d.day_set, steps,
+        });
+      }
       this._cancel();
     } catch (err) {
       d.error = `Save failed: ${err?.message || err}`;
+      this._render();
+    }
+  }
+
+  async _delete() {
+    try {
+      await this._hass.callService("sb_scheduler", "remove_schedule", {
+        schedule_id: this._open,
+      });
+      this._cancel();
+    } catch (err) {
+      this._draft.error = `Delete failed: ${err?.message || err}`;
+      this._draft.confirmDelete = false;
       this._render();
     }
   }
@@ -291,10 +439,9 @@ class SbSchedulerCard extends HTMLElement {
 
   _listHtml() {
     const rows = this._schedules();
+    const add = `<div class="addrow"><button class="new">+ New schedule</button></div>`;
     if (!rows.length) {
-      return `<div class="empty">No schedules yet.<br>
-        Create one with the <code>sb_scheduler.create_schedule</code> action —
-        this card edits existing schedules.</div>`;
+      return `<div class="empty">No schedules yet.</div>${add}`;
     }
     return rows.map((s) => {
       const steps = this._steps(s);
@@ -345,7 +492,7 @@ class SbSchedulerCard extends HTMLElement {
           </div>`;
         }).join("")}</div>`}
       </div>`;
-    }).join("");
+    }).join("") + add;
   }
 
   _editorHtml() {
@@ -355,7 +502,8 @@ class SbSchedulerCard extends HTMLElement {
     return `
       ${d.error ? `<div class="error">${esc(d.error)}</div>` : ""}
       <label class="field"><span>Name</span>
-        <input id="name" type="text" value="${esc(d.name)}"></label>
+        <input id="name" type="text" value="${esc(d.name)}"
+               placeholder="${d.creating ? "New schedule" : ""}"></label>
 
       <label class="field"><span>Runs on</span>
         <select id="day_set">
@@ -365,30 +513,36 @@ class SbSchedulerCard extends HTMLElement {
       ${known ? "" : `<div class="warn">This schedule points at a day-set that no longer exists, so it cannot run.</div>`}
 
       ${d.steps.map((step, si) => this._stepHtml(step, si, d.steps.length)).join("")}
+      <button class="addstep">+ Add a step</button>
 
-      <div class="actions-note">Actions are not editable here in v1 — use
-        <code>sb_scheduler.edit_schedule</code>. Adding a step needs actions,
-        so it belongs there too.</div>
-
-      <div class="buttons">
-        <button class="cancel">Cancel</button>
-        <button class="save">Save</button>
-      </div>`;
+      ${d.confirmDelete ? `
+        <div class="confirm">
+          Delete this schedule? Its steps and run history go with it.
+          <div class="buttons">
+            <button class="nodelete">Keep it</button>
+            <button class="dodelete danger">Delete</button>
+          </div>
+        </div>` : `
+        <div class="buttons">
+          ${d.creating ? "" : `<button class="askdelete danger-text">Delete schedule</button>`}
+          <span class="spacer"></span>
+          <button class="cancel">Cancel</button>
+          <button class="save">${d.creating ? "Create" : "Save"}</button>
+        </div>`}`;
   }
 
   _stepHtml(step, si, total) {
     return `
       <div class="stepedit ${step.enabled ? "" : "off"}">
-        ${total > 1 ? `
-          <div class="stephead">
-            <input class="step-name" data-s="${si}" type="text" value="${esc(step.name)}"
-                   placeholder="Step name">
-            <label class="toggle small" title="${step.enabled ? "Disable" : "Enable"} this step">
-              <input type="checkbox" class="step-on" data-s="${si}" ${step.enabled ? "checked" : ""}>
-              <span></span>
-            </label>
-          </div>` : `
-          <input class="step-name" data-s="${si}" type="hidden" value="${esc(step.name)}">`}
+        <div class="stephead">
+          <input class="step-name" data-s="${si}" type="text" value="${esc(step.name)}"
+                 placeholder="Step name">
+          <label class="toggle small" title="${step.enabled ? "Disable" : "Enable"} this step">
+            <input type="checkbox" class="step-on" data-s="${si}" ${step.enabled ? "checked" : ""}>
+            <span></span>
+          </label>
+          ${total > 1 ? `<button class="dropstep" data-s="${si}" title="Remove this step">✕</button>` : ""}
+        </div>
 
         <div class="field"><span>Times</span>
           <div class="radios">
@@ -437,7 +591,85 @@ class SbSchedulerCard extends HTMLElement {
               <input class="iv-every" data-s="${si}" type="number" min="1" max="720" value="${esc(step.every_minutes)}"></label>
             <div class="count" data-s="${si}">${this._intervalCount(step)}</div>
           </div>`}
+
+        <div class="field"><span>Does</span></div>
+        ${step.actions.map((a, ai) => this._actionHtml(a, si, ai)).join("")}
+        <button class="addaction" data-s="${si}">+ Add an action</button>
       </div>`;
+  }
+
+  _actionHtml(a, si, ai) {
+    const entities = a.mode === "entity"
+      ? this._entityOptions(a.filter, a.filter ? "" : a.domain, a.entity_id) : [];
+    const services = this._servicesFor(a.domain);
+    const spare = this._spareFields(a);
+    return `
+      <div class="action" data-s="${si}" data-a="${ai}">
+        <div class="arow">
+          <div class="radios small">
+            <label><input type="radio" name="amode${si}_${ai}" data-s="${si}" data-a="${ai}"
+              value="entity" ${a.mode === "entity" ? "checked" : ""}> Entity</label>
+            <label><input type="radio" name="amode${si}_${ai}" data-s="${si}" data-a="${ai}"
+              value="service" ${a.mode === "service" ? "checked" : ""}> Service only</label>
+          </div>
+          <button class="dropaction" data-s="${si}" data-a="${ai}" title="Remove this action">✕</button>
+        </div>
+
+        ${a.mode === "entity" ? `
+          <input class="ent-filter" data-s="${si}" data-a="${ai}" type="text"
+                 placeholder="Filter entities…" value="${esc(a.filter)}">
+          <select class="ent-pick" data-s="${si}" data-a="${ai}">
+            ${a.entity_id ? "" : `<option value="" selected>Choose an entity…</option>`}
+            ${entities.map((e) => `<option value="${esc(e.id)}" ${e.id === a.entity_id ? "selected" : ""}>${esc(e.name)} — ${esc(e.id)}</option>`).join("")}
+          </select>
+          <select class="act-service" data-s="${si}" data-a="${ai}">
+            ${services.map((v) => `<option value="${esc(v)}" ${v === a.service ? "selected" : ""}>${esc(a.domain)}.${esc(v)}</option>`).join("")}
+            ${services.includes(a.service) ? "" : `<option value="${esc(a.service)}" selected>${esc(a.domain)}.${esc(a.service)} (unknown)</option>`}
+          </select>
+        ` : `
+          <div class="pair">
+            <select class="act-domain" data-s="${si}" data-a="${ai}">
+              ${this._domains().map((v) => `<option value="${esc(v)}" ${v === a.domain ? "selected" : ""}>${esc(v)}</option>`).join("")}
+              ${this._domains().includes(a.domain) ? "" : `<option value="${esc(a.domain)}" selected>${esc(a.domain)} (unknown)</option>`}
+            </select>
+            <select class="act-service" data-s="${si}" data-a="${ai}">
+              ${services.map((v) => `<option value="${esc(v)}" ${v === a.service ? "selected" : ""}>${esc(v)}</option>`).join("")}
+              ${services.includes(a.service) ? "" : `<option value="${esc(a.service)}" selected>${esc(a.service)} (unknown)</option>`}
+            </select>
+          </div>`}
+
+        ${Object.keys(a.data).map((k) => this._fieldHtml(a, k, si, ai)).join("")}
+        ${spare.length ? `
+          <select class="addfield" data-s="${si}" data-a="${ai}">
+            <option value="" selected>+ Add a field…</option>
+            ${spare.map((k) => `<option value="${esc(k)}">${esc(k)}</option>`).join("")}
+          </select>` : ""}
+      </div>`;
+  }
+
+  _fieldHtml(a, key, si, ai) {
+    const v = a.data[key];
+    const kind = valueKind(v);
+    const meta = this._fieldMeta(a, key);
+    const num = meta?.selector?.number || {};
+    const common = `data-s="${si}" data-a="${ai}" data-k="${esc(key)}"`;
+    // An opaque value (notify's data: {tag, channel}) is shown but NOT edited:
+    // rendering it as text and re-parsing is how a tag gets silently dropped.
+    const control = kind === "opaque"
+      ? `<span class="opaque" title="Edit this with the sb_scheduler.edit_schedule action">${esc(JSON.stringify(v))}</span>`
+      : kind === "boolean"
+        ? `<label class="toggle small"><input type="checkbox" class="fld-bool" ${common} ${v ? "checked" : ""}><span></span></label>`
+        : kind === "number"
+          ? `<input class="fld-num" ${common} type="number" value="${esc(v)}"
+               ${num.min !== undefined ? `min="${esc(num.min)}"` : ""}
+               ${num.max !== undefined ? `max="${esc(num.max)}"` : ""}
+               ${num.step !== undefined ? `step="${esc(num.step)}"` : ""}>`
+          : `<input class="fld-text" ${common} type="text" value="${esc(v)}">`;
+    return `<div class="fieldrow">
+      <span class="fkey" title="${esc(meta.description || "")}">${esc(key)}</span>
+      ${control}
+      ${kind === "opaque" ? "" : `<button class="dropfield" ${common} title="Remove">✕</button>`}
+    </div>`;
   }
 
   _intervalCount(step) {
@@ -456,6 +688,7 @@ class SbSchedulerCard extends HTMLElement {
     const root = this.shadowRoot;
     root.querySelectorAll("button.edit").forEach((b) =>
       b.addEventListener("click", () => this._beginEdit(b.dataset.id)));
+    root.querySelector("button.new")?.addEventListener("click", () => this._beginCreate());
 
     // Run now fires the actions immediately, ignoring the day-set. No confirm
     // step: the button is explicit and the consequence is one run of something
@@ -473,8 +706,6 @@ class SbSchedulerCard extends HTMLElement {
           b.title = String(err?.message || err);
           return;
         }
-        // last_triggered changes, which re-renders the list and restores this
-        // button. Restore by hand too, in case the service was a no-op.
         setTimeout(() => {
           b.disabled = false;
           b.textContent = "Run now";
@@ -495,6 +726,7 @@ class SbSchedulerCard extends HTMLElement {
     if (!this._open) return;
     const d = this._draft;
     const stepOf = (el) => d.steps[Number(el.dataset.s)];
+    const actOf = (el) => d.steps[Number(el.dataset.s)].actions[Number(el.dataset.a)];
 
     const name = root.querySelector("#name");
     if (name) name.addEventListener("input", () => { d.name = name.value; });
@@ -516,7 +748,7 @@ class SbSchedulerCard extends HTMLElement {
         this._render();
       }));
 
-    root.querySelectorAll('input[type="radio"][data-s]').forEach((r) =>
+    root.querySelectorAll('input[type="radio"][data-s]:not([data-a])').forEach((r) =>
       r.addEventListener("change", () => {
         if (!r.checked) return;
         stepOf(r).type = r.value;
@@ -565,8 +797,130 @@ class SbSchedulerCard extends HTMLElement {
         if (out) out.textContent = this._intervalCount(stepOf(el));
       }));
 
+    // --- steps
+    root.querySelector("button.addstep")?.addEventListener("click", () => {
+      d.steps.push({ ...blankStep(), name: `Step ${d.steps.length + 1}` });
+      d.error = null;
+      this._render();
+    });
+    root.querySelectorAll("button.dropstep").forEach((b) =>
+      b.addEventListener("click", () => {
+        // Draft-local, so Cancel still undoes it — no confirmation needed.
+        d.steps.splice(Number(b.dataset.s), 1);
+        d.error = null;
+        this._render();
+      }));
+
+    // --- actions
+    root.querySelectorAll("button.addaction").forEach((b) =>
+      b.addEventListener("click", () => {
+        stepOf(b).actions.push({
+          mode: "entity", domain: "light", service: "turn_on",
+          entity_id: "", filter: "", data: {},
+        });
+        d.error = null;
+        this._render();
+      }));
+    root.querySelectorAll("button.dropaction").forEach((b) =>
+      b.addEventListener("click", () => {
+        stepOf(b).actions.splice(Number(b.dataset.a), 1);
+        d.error = null;
+        this._render();
+      }));
+
+    root.querySelectorAll('input[type="radio"][data-a]').forEach((r) =>
+      r.addEventListener("change", () => {
+        if (!r.checked) return;
+        const a = actOf(r);
+        a.mode = r.value;
+        if (a.mode === "service") a.entity_id = "";
+        d.error = null;
+        this._render();
+      }));
+
+    // The filter repopulates its own select IN PLACE: re-rendering here would
+    // steal focus and the cursor on every keystroke.
+    root.querySelectorAll("input.ent-filter").forEach((el) =>
+      el.addEventListener("input", () => {
+        const a = actOf(el);
+        a.filter = el.value;
+        const sel = root.querySelector(`select.ent-pick[data-s="${el.dataset.s}"][data-a="${el.dataset.a}"]`);
+        if (!sel) return;
+        const opts = this._entityOptions(a.filter, a.filter ? "" : a.domain, a.entity_id);
+        sel.innerHTML = (a.entity_id ? "" : `<option value="">Choose an entity…</option>`) +
+          opts.map((e) => `<option value="${esc(e.id)}" ${e.id === a.entity_id ? "selected" : ""}>${esc(e.name)} — ${esc(e.id)}</option>`).join("");
+      }));
+
+    root.querySelectorAll("select.ent-pick").forEach((sel) =>
+      sel.addEventListener("change", () => {
+        const a = actOf(sel);
+        a.entity_id = sel.value;
+        const domain = sel.value.split(".")[0];
+        if (domain && domain !== a.domain) {
+          // The service belongs to the entity's domain, so it has to follow.
+          a.domain = domain;
+          const svcs = this._servicesFor(domain);
+          if (!svcs.includes(a.service)) a.service = svcs[0] || "";
+          a.data = {};
+        }
+        d.error = null;
+        this._render();
+      }));
+
+    root.querySelectorAll("select.act-domain").forEach((sel) =>
+      sel.addEventListener("change", () => {
+        const a = actOf(sel);
+        a.domain = sel.value;
+        const svcs = this._servicesFor(a.domain);
+        if (!svcs.includes(a.service)) a.service = svcs[0] || "";
+        a.data = {};
+        d.error = null;
+        this._render();
+      }));
+
+    root.querySelectorAll("select.act-service").forEach((sel) =>
+      sel.addEventListener("change", () => {
+        actOf(sel).service = sel.value;
+        d.error = null;
+        this._render();
+      }));
+
+    root.querySelectorAll("select.addfield").forEach((sel) =>
+      sel.addEventListener("change", () => {
+        if (!sel.value) return;
+        const a = actOf(sel);
+        const meta = this._fieldMeta(a, sel.value);
+        const s = meta.selector || {};
+        a.data[sel.value] = "number" in s ? (s.number?.min ?? 0)
+          : "boolean" in s ? false : "";
+        d.error = null;
+        this._render();
+      }));
+
+    root.querySelectorAll("input.fld-text").forEach((el) =>
+      el.addEventListener("input", () => { actOf(el).data[el.dataset.k] = el.value; }));
+    root.querySelectorAll("input.fld-num").forEach((el) =>
+      el.addEventListener("input", () => { actOf(el).data[el.dataset.k] = Number(el.value); }));
+    root.querySelectorAll("input.fld-bool").forEach((el) =>
+      el.addEventListener("change", () => { actOf(el).data[el.dataset.k] = el.checked; }));
+    root.querySelectorAll("button.dropfield").forEach((b) =>
+      b.addEventListener("click", () => {
+        delete actOf(b).data[b.dataset.k];
+        this._render();
+      }));
+
+    // --- buttons
     root.querySelector("button.cancel")?.addEventListener("click", () => this._cancel());
     root.querySelector("button.save")?.addEventListener("click", () => this._save());
+    root.querySelector("button.askdelete")?.addEventListener("click", () => {
+      d.confirmDelete = true;
+      this._render();
+    });
+    root.querySelector("button.nodelete")?.addEventListener("click", () => {
+      d.confirmDelete = false;
+      this._render();
+    });
+    root.querySelector("button.dodelete")?.addEventListener("click", () => this._delete());
   }
 }
 
@@ -578,7 +932,6 @@ const STYLE = `
 .body { padding: 8px 16px 16px; }
 .empty { color: var(--secondary-text-color); padding: 12px 0; line-height: 1.5; }
 .row { padding: 10px 0; border-bottom: 1px solid var(--divider-color); }
-.row:last-of-type { border-bottom: none; }
 .row.disabled .name, .row.disabled .meta, .row.disabled .steps { opacity: .55; }
 .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 /* min-width keeps the controls from crushing the text before the row wraps */
@@ -593,11 +946,9 @@ const STYLE = `
    schedule reads as one thing with two parts rather than two schedules. */
 .steps { margin: 6px 0 0 8px; padding-left: 12px;
          border-left: 2px solid var(--divider-color); }
-.step { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-        padding: 6px 0; }
-/* Steps live inside a schedule row that is already indented, so they wrap at a
-   narrower width than the schedule itself — otherwise every step in a
-   sidebar-width column spills its controls onto a second line. */
+.step { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; }
+/* Steps live inside an already-indented row, so they wrap narrower than the
+   schedule itself — otherwise every step in a sidebar-width column spills. */
 .step .info { flex: 1 1 110px; min-width: 110px; }
 .step .controls { gap: 6px; }
 .step .controls button { padding: 3px 8px; font-size: .85em; }
@@ -607,6 +958,7 @@ const STYLE = `
 .controls { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
 .controls button { white-space: nowrap; }
 .controls button[disabled] { opacity: .6; cursor: default; }
+.addrow { padding-top: 12px; }
 .toggle { position: relative; display: inline-block; width: 40px; height: 22px; flex: 0 0 auto; }
 .toggle.small { width: 34px; height: 19px; }
 .toggle input { opacity: 0; width: 0; height: 0; }
@@ -625,7 +977,12 @@ button { cursor: pointer; border-radius: 6px; border: 1px solid var(--divider-co
          padding: 6px 12px; font: inherit; }
 button.save { background: var(--primary-color); color: var(--text-primary-color);
               border-color: transparent; }
-button.drop { border: none; background: none; color: var(--error-color); padding: 4px 8px; }
+button.danger { background: var(--error-color); color: var(--text-primary-color);
+                border-color: transparent; }
+button.danger-text { color: var(--error-color); border-color: transparent; background: none;
+                     padding-left: 0; }
+button.drop, button.dropstep, button.dropaction, button.dropfield {
+  border: none; background: none; color: var(--error-color); padding: 4px 8px; }
 .field { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; }
 .field > span { color: var(--secondary-text-color); font-size: .85em; }
 .field.inline { flex: 1; }
@@ -634,6 +991,7 @@ input, select { font: inherit; padding: 8px; border-radius: 6px;
                 background: var(--card-background-color); color: var(--primary-text-color); }
 option { background: var(--card-background-color); color: var(--primary-text-color); }
 .radios { display: flex; gap: 16px; flex-wrap: wrap; }
+.radios.small { font-size: .85em; gap: 10px; }
 .radios label { display: flex; align-items: center; gap: 6px; }
 .times { display: flex; flex-direction: column; gap: 6px; }
 .timerow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -646,16 +1004,32 @@ option { background: var(--card-background-color); color: var(--primary-text-col
 .stepedit.off { opacity: .6; }
 .stephead { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .stephead .step-name { flex: 1; font-weight: 500; }
+/* An action nests one level deeper again, so it gets a softer rail. */
+.action { border-left: 2px solid var(--divider-color); padding: 6px 0 6px 10px;
+          margin: 6px 0; display: flex; flex-direction: column; gap: 6px; }
+.arow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pair { display: flex; gap: 6px; }
+.pair select { flex: 1; min-width: 0; }
+.fieldrow { display: flex; align-items: center; gap: 8px; }
+.fkey { font-size: .85em; color: var(--secondary-text-color); flex: 0 0 96px;
+        overflow: hidden; text-overflow: ellipsis; }
+.fieldrow input { flex: 1; min-width: 0; }
+.opaque { flex: 1; font-size: .8em; color: var(--secondary-text-color);
+          font-family: monospace; overflow: hidden; text-overflow: ellipsis;
+          white-space: nowrap; }
 .modelbl { font-size: .8em; color: var(--secondary-text-color); }
 .modelbl.on { color: var(--primary-text-color); font-weight: 500; }
 .timerow select { padding: 7px 6px; }
 .occ-mins { width: 76px; }
 .unit { font-size: .8em; color: var(--secondary-text-color); }
-.buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.buttons { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+.buttons .spacer { flex: 1; }
+.confirm { border: 1px solid var(--error-color); border-radius: 8px; padding: 12px;
+           margin-top: 16px; font-size: .9em; }
+.confirm .buttons { margin-top: 8px; justify-content: flex-end; }
 .error { background: var(--error-color); color: var(--text-primary-color);
          padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; }
 .warn { color: var(--warning-color); font-size: .85em; margin: -6px 0 8px; }
-.actions-note { color: var(--secondary-text-color); font-size: .8em; margin-top: 16px; }
 code { background: var(--secondary-background-color); padding: 1px 4px; border-radius: 3px; }
 `;
 
@@ -694,7 +1068,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: CARD,
   name: "SB Scheduler Card",
-  description: "Edit sb_scheduler schedules: day-set and per-step time patterns.",
+  description: "Create and edit sb_scheduler schedules: day-sets, steps, times and actions.",
   preview: false,
   documentationURL: "https://github.com/snadboy/sb-scheduler",
 });

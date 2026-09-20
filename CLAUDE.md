@@ -73,6 +73,50 @@ before no longer exist.
   already-indented row, and at sidebar width its controls otherwise spill onto
   a second line.
 
+## Full editing (v0.9.0, 2026-09-20)
+
+Create, delete, add/remove steps, and edit ACTIONS. The card now writes through
+all three services (`create_schedule`, `edit_schedule`, `remove_schedule`).
+
+- **Actions are entity-first.** Pick an entity (filter box + capped select — a
+  select of 9,000 entities is unusable), and the service list comes from
+  `hass.services[domain]`, so no service name is ever typed. A second mode,
+  **Service only**, exists for actions with no target: `notify.mobile_app_*` is
+  a service, not an entity, and entity-first alone cannot express it.
+- **Unknown and nested service_data is preserved, never re-parsed.** The Bins
+  Out action carries `data: {tag, channel}`; the tag is what makes the
+  notification replace in place. Objects and arrays render read-only. Editing
+  the message must not silently drop the tag.
+- **`brightness: 3` is not in `light.turn_on`'s documented fields** (2026.9
+  buries it under `additional_fields`), so the editor renders a row for every
+  key already present in `service_data`, and only uses the service metadata to
+  populate "+ Add a field". Rendering only documented fields would have made
+  the bedside lamps' brightness invisible and then dropped it.
+- Field editors come from the selector: number/boolean/text. Anything else is
+  preserved and shown read-only.
+- **Removing a step is draft-local**, so Cancel undoes it — no confirmation.
+  Deleting a SCHEDULE is immediate, so that one has an inline confirm.
+- A step with no actions fails validation: it would arm a timer that does
+  nothing.
+- New steps are saved with **no `step_id`** so the backend allocates one; see
+  `allocate_step_ids` in the integration for why positional ids collide.
+
+## HACS adds a SECOND resource, it does not update the first
+
+After `ha_manage_hacs` downloaded v0.8.0, Lovelace had **two** resources:
+`sb-scheduler-card.js?hacstag=…070` and `…080`. The browser loaded the module
+twice and the second `customElements.define` threw
+`the name "sb-scheduler-card" has already been used`. Both URLs point at the
+same file so behaviour was still correct, but a browser holding the old URL
+would serve stale code.
+
+Check after every HACS update and delete the stale one over the websocket:
+
+```
+lovelace/resources        -> find duplicates
+lovelace/resources/delete { "resource_id": "..." }
+```
+
 ## Testing
 
 `parseOccurrence`/`serialiseOccurrence` round-trips can be checked without a
