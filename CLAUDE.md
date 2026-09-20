@@ -51,6 +51,28 @@ unreachable, and `sunset+` could not be typed at all. v0.6.0 made it
 recoverable with a sticky per-row kind; v0.7.0 made it impossible by removing
 free text entirely. Prefer removing a bug class to catching it.
 
+## Steps (v0.8.0, 2026-09-20)
+
+A schedule holds one or more **steps** (pattern + actions). The card reads
+`steps[]` off the switch entity; the top-level `pattern`/`times_detail` it used
+before no longer exist.
+
+- A **one-step schedule renders flat** — repeating its only step's name under
+  the schedule's own name is noise. Multi-step schedules get a line per step on
+  an indented rail, each with its own times, Last/Next, enable toggle and
+  Run now.
+- The editor gives each step its own bordered block. **Steps cannot be added or
+  removed here**, because a step with no actions does nothing and actions are
+  not editable in v1.
+- **Save sends only `{step_id, name, enabled, pattern}`.** The backend merges
+  by `step_id` (`merge_steps`), so the actions the card cannot edit survive.
+  Before that merge existed, this same save would have emptied them.
+- **The step toggle must send every `step_id`** — the stored list becomes
+  exactly what was passed, so an omitted step is deleted.
+- `.step .info` wraps at 110px, not the schedule's 180px: a step sits inside an
+  already-indented row, and at sidebar width its controls otherwise spill onto
+  a second line.
+
 ## Testing
 
 `parseOccurrence`/`serialiseOccurrence` round-trips can be checked without a

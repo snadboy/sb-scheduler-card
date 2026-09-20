@@ -1,20 +1,23 @@
-/* SB Scheduler Card — v0.7.0 (edit-only)
+/* SB Scheduler Card — v0.8.0 (edit-only, steps-aware)
  *
- * Edits existing sb_scheduler schedules: name, day-set, and time pattern.
- * Creating schedules and editing actions are deliberately out of v1 — they are
- * most of the work, and `sb_scheduler.create_schedule` already covers creation.
+ * Edits existing sb_scheduler schedules: name, day-set, and each step's name
+ * and time pattern. A schedule holds one or more STEPS — "Garden Lights" is one
+ * schedule with an On step at sunset and an Off step at sunrise — so times and
+ * next/last are per step, not per schedule.
+ *
+ * Creating schedules and editing ACTIONS are deliberately out of v1, which is
+ * also why steps cannot be added here: a step with no actions does nothing.
  *
  * Needs no websocket API: schedules are read from their switch entities'
  * attributes and written back through `sb_scheduler.edit_schedule`.
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.7.0";
+const VERSION = "0.8.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
-// through the editor, which is why these get a text field and not <input type=time>.
+// through the editor.
 const SUN = /^(sunrise|sunset)(\s*[+-]\s*\d{1,2}:\d{2}(:\d{2})?)?$/i;
-const isSun = (v) => SUN.test(String(v ?? "").trim());
 
 // An occurrence is EDITED as structure, never as text: a typo like
 // "sccunrise-00:15" cannot be expressed by a toggle, two dropdowns and a
@@ -48,12 +51,6 @@ const serialiseOccurrence = (o) => {
   const m = String(n % 60).padStart(2, "0");
   return `${o.event}${o.sign}${h}:${m}:00`;
 };
-const isClock = (v) => {
-  const s = String(v ?? "").trim();
-  if (!/^\d{1,2}:\d{2}$/.test(s)) return false;
-  const [h, m] = s.split(":").map(Number);
-  return h < 24 && m < 60;
-};
 
 // "06:50" -> "6:50"; a schedule time is read, not sorted, so drop the pad.
 const hhmm = (t) => String(t ?? "").replace(/^0/, "");
@@ -67,6 +64,19 @@ const describeTime = (d) => {
   const mins = Number(d.offset_minutes || 0);
   const when = mins === 0 ? "at" : mins > 0 ? "after" : "before";
   return `${clock} (${when} ${d.event})`;
+};
+
+// One step's times, however its pattern is shaped.
+const summarise = (step) => {
+  const pattern = step.pattern || {};
+  if (pattern.type === "interval") {
+    return `every ${pattern.every_minutes} min, ` +
+      `${hhmm(String(pattern.start).slice(0, 5))}–${hhmm(String(pattern.stop).slice(0, 5))}`;
+  }
+  return (step.times_detail
+    ? step.times_detail.map(describeTime)
+    : (step.times || []).map((t) => hhmm(String(t).slice(0, 5)))
+  ).join(", ");
 };
 
 const esc = (s) =>
@@ -118,7 +128,7 @@ class SbSchedulerCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 3 + this._schedules().length;
+    return 3 + this._schedules().reduce((n, s) => n + this._steps(s).length, 0);
   }
 
   // --- data ---------------------------------------------------------------
@@ -128,6 +138,10 @@ class SbSchedulerCard extends HTMLElement {
       .filter((id) => id.startsWith("switch.") && states[id].attributes?.schedule_id)
       .map((id) => ({ entity_id: id, ...states[id].attributes, state: states[id].state }))
       .sort((a, b) => String(a.friendly_name).localeCompare(String(b.friendly_name)));
+  }
+
+  _steps(s) {
+    return Array.isArray(s.steps) ? s.steps : [];
   }
 
   _daySets() {
@@ -143,7 +157,10 @@ class SbSchedulerCard extends HTMLElement {
 
   _signature() {
     return this._schedules()
-      .map((s) => `${s.schedule_id}|${s.state}|${s.day_set}|${s.next_trigger}|${s.last_triggered}|${JSON.stringify(s.pattern)}|${s.friendly_name}`)
+      .map((s) => `${s.schedule_id}|${s.state}|${s.day_set}|${s.friendly_name}|` +
+        this._steps(s).map((t) =>
+          `${t.step_id}:${t.name}:${t.enabled}:${t.next_trigger}:${t.last_triggered}:${JSON.stringify(t.pattern)}`
+        ).join(";"))
       .join("~");
   }
 
@@ -151,22 +168,27 @@ class SbSchedulerCard extends HTMLElement {
   _beginEdit(scheduleId) {
     const s = this._schedules().find((x) => x.schedule_id === scheduleId);
     if (!s) return;
-    const pattern = s.pattern || {};
     this._open = scheduleId;
     this._draft = {
       entity_id: s.entity_id,
       name: s.friendly_name || "",
       day_set: s.day_set || "daily",
-      type: pattern.type === "interval" ? "interval" : "occurrences",
-      occurrences: (pattern.occurrences || []).map(parseOccurrence),
-      start: String(pattern.start || "09:00").slice(0, 5),
-      stop: String(pattern.stop || "17:00").slice(0, 5),
-      every_minutes: Number(pattern.every_minutes || 15),
+      steps: this._steps(s).map((step) => {
+        const pattern = step.pattern || {};
+        const occurrences = (pattern.occurrences || []).map(parseOccurrence);
+        return {
+          step_id: step.step_id,
+          name: step.name || "",
+          enabled: step.enabled !== false,
+          type: pattern.type === "interval" ? "interval" : "occurrences",
+          occurrences: occurrences.length ? occurrences : [parseOccurrence("06:30")],
+          start: String(pattern.start || "09:00").slice(0, 5),
+          stop: String(pattern.stop || "17:00").slice(0, 5),
+          every_minutes: Number(pattern.every_minutes || 15),
+        };
+      }),
       error: null,
     };
-    if (!this._draft.occurrences.length) {
-      this._draft.occurrences = [parseOccurrence("06:30")];
-    }
     this._render();
   }
 
@@ -181,16 +203,25 @@ class SbSchedulerCard extends HTMLElement {
     const timeOk = (t) => /^\d{1,2}:\d{2}$/.test(t) &&
       Number(t.split(":")[0]) < 24 && Number(t.split(":")[1]) < 60;
     if (!d.name.trim()) return "Name cannot be empty.";
-    if (d.type === "occurrences") {
-      if (!d.occurrences.length) return "Add at least one time.";
-      // Every value is assembled from a toggle, dropdowns and a spinner, so
-      // it cannot be misspelled. Only a clock row can still be blank.
-      const blank = d.occurrences.filter((o) => o.kind === "clock" && !timeOk(o.time));
-      if (blank.length) return "Every clock time needs a value.";
-    } else {
-      if (!timeOk(d.start) || !timeOk(d.stop)) return "Start and stop must be times.";
-      if (d.stop <= d.start) return "Stop must be after start.";
-      if (!(d.every_minutes >= 1)) return "Repeat every … must be at least 1 minute.";
+    for (const step of d.steps) {
+      const where = d.steps.length > 1 ? `"${step.name || "step"}": ` : "";
+      if (!step.name.trim()) return "Every step needs a name.";
+      if (step.type === "occurrences") {
+        if (!step.occurrences.length) return `${where}add at least one time.`;
+        // Every value is assembled from a toggle, dropdowns and a spinner, so
+        // it cannot be misspelled. Only a clock row can still be blank.
+        if (step.occurrences.some((o) => o.kind === "clock" && !timeOk(o.time))) {
+          return `${where}every clock time needs a value.`;
+        }
+      } else {
+        if (!timeOk(step.start) || !timeOk(step.stop)) {
+          return `${where}start and stop must be times.`;
+        }
+        if (step.stop <= step.start) return `${where}stop must be after start.`;
+        if (!(step.every_minutes >= 1)) {
+          return `${where}repeat every … must be at least 1 minute.`;
+        }
+      }
     }
     return null;
   }
@@ -203,22 +234,46 @@ class SbSchedulerCard extends HTMLElement {
       this._render();
       return;
     }
-    const pattern = d.type === "interval"
-      ? { type: "interval", start: d.start, stop: d.stop, every_minutes: Number(d.every_minutes) }
-      : { type: "occurrences", occurrences: d.occurrences.map(serialiseOccurrence) };
-
     try {
       await this._hass.callService("sb_scheduler", "edit_schedule", {
         schedule_id: this._open,
         name: d.name.trim(),
         day_set: d.day_set,
-        pattern,
+        // Only what this card owns. The backend merges each step onto the
+        // stored one by step_id, so the actions it cannot edit are preserved.
+        steps: d.steps.map((step) => ({
+          step_id: step.step_id,
+          name: step.name.trim(),
+          enabled: step.enabled,
+          pattern: step.type === "interval"
+            ? { type: "interval", start: step.start, stop: step.stop,
+                every_minutes: Number(step.every_minutes) }
+            : { type: "occurrences",
+                occurrences: step.occurrences.map(serialiseOccurrence) },
+        })),
       });
       this._cancel();
     } catch (err) {
       d.error = `Save failed: ${err?.message || err}`;
       this._render();
     }
+  }
+
+  /** Flip one step's enabled flag.
+   *
+   * There is no per-step service, so this goes through edit_schedule — and it
+   * must send EVERY step, because an omitted step is a deletion.
+   */
+  _toggleStep(scheduleId, stepId, enabled) {
+    const s = this._schedules().find((x) => x.schedule_id === scheduleId);
+    if (!s) return;
+    this._hass.callService("sb_scheduler", "edit_schedule", {
+      schedule_id: scheduleId,
+      steps: this._steps(s).map((step) => ({
+        step_id: step.step_id,
+        enabled: step.step_id === stepId ? enabled : step.enabled !== false,
+      })),
+    });
   }
 
   // --- rendering ----------------------------------------------------------
@@ -242,33 +297,53 @@ class SbSchedulerCard extends HTMLElement {
         this card edits existing schedules.</div>`;
     }
     return rows.map((s) => {
-      const pattern = s.pattern || {};
-      const summary = pattern.type === "interval"
-        ? `every ${pattern.every_minutes} min, ${hhmm(String(pattern.start).slice(0, 5))}\u2013${hhmm(String(pattern.stop).slice(0, 5))}`
-        : (s.times_detail
-            ? s.times_detail.map(describeTime)
-            : (s.times || []).map((t) => hhmm(String(t).slice(0, 5)))
-          ).join(", ");
+      const steps = this._steps(s);
       const on = s.state !== "off";
+      // A one-step schedule is shown flat: repeating its only step's name
+      // under its own is noise. Multi-step schedules get a line each.
+      const solo = steps.length === 1 ? steps[0] : null;
       return `<div class="row ${on ? "" : "disabled"}">
-        <div class="info">
-          <div class="name">${esc(s.friendly_name)}</div>
-          <div class="meta">
-            <span class="chip">${esc(s.day_set)}</span>
-            <span>${esc(summary)}</span>
+        <div class="head">
+          <div class="info">
+            <div class="name">${esc(s.friendly_name)}</div>
+            <div class="meta">
+              <span class="chip">${esc(s.day_set)}</span>
+              ${solo ? `<span>${esc(summarise(solo))}</span>` : `<span>${steps.length} steps</span>`}
+            </div>
+            ${solo ? `
+              <div class="sub">Last: ${esc(solo.last_triggered ? prettyTrigger(solo.last_triggered) : "never")}</div>
+              <div class="sub">Next: ${on ? esc(prettyTrigger(solo.next_trigger)) : "—"}</div>` : ""}
           </div>
-          <div class="last">Last: ${esc(s.last_triggered ? prettyTrigger(s.last_triggered) : "never")}</div>
-          <div class="next">Next: ${on ? esc(prettyTrigger(s.next_trigger)) : "\u2014"}</div>
+          <div class="controls">
+            <label class="toggle" title="${on ? "Disable" : "Enable"} this schedule">
+              <input type="checkbox" class="enable" data-entity="${esc(s.entity_id)}" ${on ? "checked" : ""}>
+              <span></span>
+            </label>
+            ${solo ? `<button class="run" data-entity="${esc(s.entity_id)}"
+                       title="Run the actions now, ignoring the day-set">Run now</button>` : ""}
+            <button class="edit" data-id="${esc(s.schedule_id)}">Edit</button>
+          </div>
         </div>
-        <div class="controls">
-          <label class="toggle" title="${on ? "Disable" : "Enable"} this schedule">
-            <input type="checkbox" class="enable" data-entity="${esc(s.entity_id)}" ${on ? "checked" : ""}>
-            <span></span>
-          </label>
-          <button class="run" data-entity="${esc(s.entity_id)}"
-                  title="Run the actions now, ignoring the day-set">Run now</button>
-          <button class="edit" data-id="${esc(s.schedule_id)}">Edit</button>
-        </div>
+        ${solo ? "" : `<div class="steps">${steps.map((step) => {
+          const stepOn = step.enabled !== false;
+          return `<div class="step ${stepOn && on ? "" : "disabled"}">
+            <div class="info">
+              <div class="sname">${esc(step.name)}
+                <span class="stimes">${esc(summarise(step))}</span></div>
+              <div class="sub">Last: ${esc(step.last_triggered ? prettyTrigger(step.last_triggered) : "never")}</div>
+              <div class="sub">Next: ${on && stepOn ? esc(prettyTrigger(step.next_trigger)) : "—"}</div>
+            </div>
+            <div class="controls">
+              <label class="toggle small" title="${stepOn ? "Disable" : "Enable"} this step">
+                <input type="checkbox" class="step-enable" data-id="${esc(s.schedule_id)}"
+                       data-step="${esc(step.step_id)}" ${stepOn ? "checked" : ""}>
+                <span></span>
+              </label>
+              <button class="run" data-entity="${esc(s.entity_id)}" data-step="${esc(step.step_id)}"
+                      title="Run this step's actions now, ignoring the day-set">Run now</button>
+            </div>
+          </div>`;
+        }).join("")}</div>`}
       </div>`;
     }).join("");
   }
@@ -289,51 +364,11 @@ class SbSchedulerCard extends HTMLElement {
         </select></label>
       ${known ? "" : `<div class="warn">This schedule points at a day-set that no longer exists, so it cannot run.</div>`}
 
-      <div class="field"><span>Times</span>
-        <div class="radios">
-          <label><input type="radio" name="ptype" value="occurrences" ${d.type === "occurrences" ? "checked" : ""}> At set times</label>
-          <label><input type="radio" name="ptype" value="interval" ${d.type === "interval" ? "checked" : ""}> Every N minutes</label>
-        </div>
-      </div>
-
-      ${d.type === "occurrences" ? `
-        <div class="times">
-          ${d.occurrences.map((o, i) => `
-            <div class="timerow">
-              <span class="modelbl ${o.kind === "clock" ? "on" : ""}">Time</span>
-              <label class="toggle" title="Switch between a clock time and a sun-relative one">
-                <input type="checkbox" class="mode" data-i="${i}" ${o.kind === "sun" ? "checked" : ""}>
-                <span></span>
-              </label>
-              <span class="modelbl ${o.kind === "sun" ? "on" : ""}">Sun</span>
-              ${o.kind === "clock" ? `
-                <input class="occ-time" data-i="${i}" type="time" value="${esc(o.time)}">
-              ` : `
-                <select class="occ-event" data-i="${i}">
-                  <option value="sunrise" ${o.event === "sunrise" ? "selected" : ""}>Sunrise</option>
-                  <option value="sunset" ${o.event === "sunset" ? "selected" : ""}>Sunset</option>
-                </select>
-                <select class="occ-sign" data-i="${i}">
-                  <option value="+" ${o.sign === "+" ? "selected" : ""}>+</option>
-                  <option value="-" ${o.sign === "-" ? "selected" : ""}>\u2212</option>
-                </select>
-                <input class="occ-mins" data-i="${i}" type="number" min="0" max="720" step="5"
-                       value="${esc(o.minutes)}">
-                <span class="unit">min</span>
-              `}
-              ${d.occurrences.length > 1 ? `<button class="drop" data-i="${i}" title="Remove">✕</button>` : ""}
-            </div>`).join("")}
-          <button class="add">+ Add a time</button>
-        </div>` : `
-        <div class="interval">
-          <label class="field inline"><span>From</span><input id="start" type="time" value="${esc(d.start)}"></label>
-          <label class="field inline"><span>Until</span><input id="stop" type="time" value="${esc(d.stop)}"></label>
-          <label class="field inline"><span>Every (min)</span><input id="every" type="number" min="1" max="720" value="${esc(d.every_minutes)}"></label>
-          <div class="count">${this._intervalCount(d)}</div>
-        </div>`}
+      ${d.steps.map((step, si) => this._stepHtml(step, si, d.steps.length)).join("")}
 
       <div class="actions-note">Actions are not editable here in v1 — use
-        <code>sb_scheduler.edit_schedule</code>.</div>
+        <code>sb_scheduler.edit_schedule</code>. Adding a step needs actions,
+        so it belongs there too.</div>
 
       <div class="buttons">
         <button class="cancel">Cancel</button>
@@ -341,15 +376,79 @@ class SbSchedulerCard extends HTMLElement {
       </div>`;
   }
 
-  _intervalCount(d) {
+  _stepHtml(step, si, total) {
+    return `
+      <div class="stepedit ${step.enabled ? "" : "off"}">
+        ${total > 1 ? `
+          <div class="stephead">
+            <input class="step-name" data-s="${si}" type="text" value="${esc(step.name)}"
+                   placeholder="Step name">
+            <label class="toggle small" title="${step.enabled ? "Disable" : "Enable"} this step">
+              <input type="checkbox" class="step-on" data-s="${si}" ${step.enabled ? "checked" : ""}>
+              <span></span>
+            </label>
+          </div>` : `
+          <input class="step-name" data-s="${si}" type="hidden" value="${esc(step.name)}">`}
+
+        <div class="field"><span>Times</span>
+          <div class="radios">
+            <label><input type="radio" name="ptype${si}" data-s="${si}" value="occurrences"
+              ${step.type === "occurrences" ? "checked" : ""}> At set times</label>
+            <label><input type="radio" name="ptype${si}" data-s="${si}" value="interval"
+              ${step.type === "interval" ? "checked" : ""}> Every N minutes</label>
+          </div>
+        </div>
+
+        ${step.type === "occurrences" ? `
+          <div class="times">
+            ${step.occurrences.map((o, i) => `
+              <div class="timerow">
+                <span class="modelbl ${o.kind === "clock" ? "on" : ""}">Time</span>
+                <label class="toggle" title="Switch between a clock time and a sun-relative one">
+                  <input type="checkbox" class="mode" data-s="${si}" data-i="${i}" ${o.kind === "sun" ? "checked" : ""}>
+                  <span></span>
+                </label>
+                <span class="modelbl ${o.kind === "sun" ? "on" : ""}">Sun</span>
+                ${o.kind === "clock" ? `
+                  <input class="occ-time" data-s="${si}" data-i="${i}" type="time" value="${esc(o.time)}">
+                ` : `
+                  <select class="occ-event" data-s="${si}" data-i="${i}">
+                    <option value="sunrise" ${o.event === "sunrise" ? "selected" : ""}>Sunrise</option>
+                    <option value="sunset" ${o.event === "sunset" ? "selected" : ""}>Sunset</option>
+                  </select>
+                  <select class="occ-sign" data-s="${si}" data-i="${i}">
+                    <option value="+" ${o.sign === "+" ? "selected" : ""}>+</option>
+                    <option value="-" ${o.sign === "-" ? "selected" : ""}>−</option>
+                  </select>
+                  <input class="occ-mins" data-s="${si}" data-i="${i}" type="number" min="0" max="720" step="5"
+                         value="${esc(o.minutes)}">
+                  <span class="unit">min</span>
+                `}
+                ${step.occurrences.length > 1 ? `<button class="drop" data-s="${si}" data-i="${i}" title="Remove">✕</button>` : ""}
+              </div>`).join("")}
+            <button class="add" data-s="${si}">+ Add a time</button>
+          </div>` : `
+          <div class="interval">
+            <label class="field inline"><span>From</span>
+              <input class="iv-start" data-s="${si}" type="time" value="${esc(step.start)}"></label>
+            <label class="field inline"><span>Until</span>
+              <input class="iv-stop" data-s="${si}" type="time" value="${esc(step.stop)}"></label>
+            <label class="field inline"><span>Every (min)</span>
+              <input class="iv-every" data-s="${si}" type="number" min="1" max="720" value="${esc(step.every_minutes)}"></label>
+            <div class="count" data-s="${si}">${this._intervalCount(step)}</div>
+          </div>`}
+      </div>`;
+  }
+
+  _intervalCount(step) {
     const toMin = (t) => {
       const [h, m] = String(t).split(":").map(Number);
       return h * 60 + m;
     };
-    const span = toMin(d.stop) - toMin(d.start);
-    const step = Number(d.every_minutes);
-    if (!(span >= 0) || !(step >= 1)) return "";
-    const n = Math.floor(span / step) + 1;
+    const span = toMin(step.stop) - toMin(step.start);
+    const size = Number(step.every_minutes);
+    if (!(span >= 0) || !(size >= 1)) return "";
+    const n = Math.floor(span / size) + 1;
     return `${n} firing${n === 1 ? "" : "s"} per day`;
   }
 
@@ -364,11 +463,11 @@ class SbSchedulerCard extends HTMLElement {
     root.querySelectorAll("button.run").forEach((b) =>
       b.addEventListener("click", async () => {
         b.disabled = true;
-        b.textContent = "Running\u2026";
+        b.textContent = "Running…";
         try {
-          await this._hass.callService("sb_scheduler", "run_now", {
-            entity_id: b.dataset.entity,
-          });
+          const data = { entity_id: b.dataset.entity };
+          if (b.dataset.step) data.step_id = b.dataset.step;
+          await this._hass.callService("sb_scheduler", "run_now", data);
         } catch (err) {
           b.textContent = "Failed";
           b.title = String(err?.message || err);
@@ -389,47 +488,59 @@ class SbSchedulerCard extends HTMLElement {
         });
       }));
 
+    root.querySelectorAll("input.step-enable").forEach((box) =>
+      box.addEventListener("change", () =>
+        this._toggleStep(box.dataset.id, box.dataset.step, box.checked)));
+
     if (!this._open) return;
     const d = this._draft;
+    const stepOf = (el) => d.steps[Number(el.dataset.s)];
 
-    const bind = (sel, key, transform = (v) => v) => {
-      const el = root.querySelector(sel);
-      if (el) el.addEventListener("input", () => { d[key] = transform(el.value); });
-    };
-    bind("#name", "name");
-    bind("#start", "start");
-    bind("#stop", "stop");
-    bind("#every", "every_minutes", Number);
-
+    const name = root.querySelector("#name");
+    if (name) name.addEventListener("input", () => { d.name = name.value; });
     const daySet = root.querySelector("#day_set");
     if (daySet) daySet.addEventListener("change", () => { d.day_set = daySet.value; });
 
-    root.querySelectorAll('input[name="ptype"]').forEach((r) =>
+    const onStep = (sel, apply, evt = "input") =>
+      root.querySelectorAll(sel).forEach((el) =>
+        el.addEventListener(evt, () => { apply(stepOf(el), el); d.error = null; }));
+
+    onStep("input.step-name", (step, el) => { step.name = el.value; });
+    onStep("input.iv-start", (step, el) => { step.start = el.value; });
+    onStep("input.iv-stop", (step, el) => { step.stop = el.value; });
+    onStep("input.iv-every", (step, el) => { step.every_minutes = Number(el.value); });
+
+    root.querySelectorAll("input.step-on").forEach((box) =>
+      box.addEventListener("change", () => {
+        stepOf(box).enabled = box.checked;
+        this._render();
+      }));
+
+    root.querySelectorAll('input[type="radio"][data-s]').forEach((r) =>
       r.addEventListener("change", () => {
         if (!r.checked) return;
-        d.type = r.value;
+        stepOf(r).type = r.value;
         d.error = null;
         this._render();
       }));
 
-    const onRow = (sel, apply, evt = "input") =>
+    const onOcc = (sel, apply, evt = "input") =>
       root.querySelectorAll(sel).forEach((el) =>
         el.addEventListener(evt, () => {
-          apply(d.occurrences[Number(el.dataset.i)], el);
+          apply(stepOf(el).occurrences[Number(el.dataset.i)], el);
           d.error = null;
         }));
 
-    onRow("input.occ-time", (o, el) => { o.time = el.value; });
-    onRow("select.occ-event", (o, el) => { o.event = el.value; }, "change");
-    onRow("select.occ-sign", (o, el) => { o.sign = el.value; }, "change");
-    onRow("input.occ-mins", (o, el) => {
-      const n = Math.max(0, Math.min(720, Math.round(Number(el.value) || 0)));
-      o.minutes = n;
+    onOcc("input.occ-time", (o, el) => { o.time = el.value; });
+    onOcc("select.occ-event", (o, el) => { o.event = el.value; }, "change");
+    onOcc("select.occ-sign", (o, el) => { o.sign = el.value; }, "change");
+    onOcc("input.occ-mins", (o, el) => {
+      o.minutes = Math.max(0, Math.min(720, Math.round(Number(el.value) || 0)));
     });
 
     root.querySelectorAll("input.mode").forEach((box) =>
       box.addEventListener("change", () => {
-        const o = d.occurrences[Number(box.dataset.i)];
+        const o = stepOf(box).occurrences[Number(box.dataset.i)];
         o.kind = box.checked ? "sun" : "clock";
         d.error = null;
         this._render();
@@ -437,24 +548,22 @@ class SbSchedulerCard extends HTMLElement {
 
     root.querySelectorAll("button.drop").forEach((b) =>
       b.addEventListener("click", () => {
-        d.occurrences.splice(Number(b.dataset.i), 1);
+        stepOf(b).occurrences.splice(Number(b.dataset.i), 1);
         this._render();
       }));
 
-    const add = root.querySelector("button.add");
-    if (add) add.addEventListener("click", () => {
-      d.occurrences.push(parseOccurrence("12:00"));
-      this._render();
-    });
+    root.querySelectorAll("button.add").forEach((b) =>
+      b.addEventListener("click", () => {
+        stepOf(b).occurrences.push(parseOccurrence("12:00"));
+        this._render();
+      }));
 
-    // Live firing count while the interval is being edited.
-    ["#start", "#stop", "#every"].forEach((sel) => {
-      const el = root.querySelector(sel);
-      if (el) el.addEventListener("input", () => {
-        const out = root.querySelector(".count");
-        if (out) out.textContent = this._intervalCount(d);
-      });
-    });
+    // Live firing count while an interval is being edited.
+    root.querySelectorAll("input.iv-start, input.iv-stop, input.iv-every").forEach((el) =>
+      el.addEventListener("input", () => {
+        const out = root.querySelector(`.count[data-s="${el.dataset.s}"]`);
+        if (out) out.textContent = this._intervalCount(stepOf(el));
+      }));
 
     root.querySelector("button.cancel")?.addEventListener("click", () => this._cancel());
     root.querySelector("button.save")?.addEventListener("click", () => this._save());
@@ -468,10 +577,10 @@ const STYLE = `
 .card-header { font-size: 1.25rem; padding: 12px 16px 0; margin: 0; }
 .body { padding: 8px 16px 16px; }
 .empty { color: var(--secondary-text-color); padding: 12px 0; line-height: 1.5; }
-.row { display: flex; align-items: center; gap: 12px; padding: 10px 0;
-       border-bottom: 1px solid var(--divider-color); flex-wrap: wrap; }
+.row { padding: 10px 0; border-bottom: 1px solid var(--divider-color); }
 .row:last-of-type { border-bottom: none; }
-.row.disabled .name, .row.disabled .meta { opacity: .55; }
+.row.disabled .name, .row.disabled .meta, .row.disabled .steps { opacity: .55; }
+.head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 /* min-width keeps the controls from crushing the text before the row wraps */
 .info { flex: 1 1 180px; min-width: 180px; }
 .name { font-weight: 500; }
@@ -479,20 +588,37 @@ const STYLE = `
         color: var(--secondary-text-color); font-size: .9em; margin-top: 2px; }
 .chip { background: var(--primary-color); color: var(--text-primary-color);
         border-radius: 10px; padding: 1px 8px; font-size: .85em; }
-.last { color: var(--secondary-text-color); font-size: .85em; margin-top: 2px; }
-.next { color: var(--secondary-text-color); font-size: .85em; }
+.sub { color: var(--secondary-text-color); font-size: .85em; margin-top: 2px; }
+/* Steps sit under their schedule, indented and on a rail, so a two-step
+   schedule reads as one thing with two parts rather than two schedules. */
+.steps { margin: 6px 0 0 8px; padding-left: 12px;
+         border-left: 2px solid var(--divider-color); }
+.step { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        padding: 6px 0; }
+/* Steps live inside a schedule row that is already indented, so they wrap at a
+   narrower width than the schedule itself — otherwise every step in a
+   sidebar-width column spills its controls onto a second line. */
+.step .info { flex: 1 1 110px; min-width: 110px; }
+.step .controls { gap: 6px; }
+.step .controls button { padding: 3px 8px; font-size: .85em; }
+.step.disabled .sname, .step.disabled .sub { opacity: .5; }
+.sname { font-size: .95em; }
+.stimes { color: var(--secondary-text-color); font-size: .9em; margin-left: 8px; }
 .controls { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
 .controls button { white-space: nowrap; }
 .controls button[disabled] { opacity: .6; cursor: default; }
 .toggle { position: relative; display: inline-block; width: 40px; height: 22px; flex: 0 0 auto; }
+.toggle.small { width: 34px; height: 19px; }
 .toggle input { opacity: 0; width: 0; height: 0; }
 .toggle span { position: absolute; inset: 0; cursor: pointer; border-radius: 22px;
                background: var(--disabled-text-color, #9e9e9e); transition: background .2s; }
 .toggle span::before { content: ""; position: absolute; width: 16px; height: 16px;
                        left: 3px; top: 3px; border-radius: 50%; background: #fff;
                        transition: transform .2s; }
+.toggle.small span::before { width: 13px; height: 13px; }
 .toggle input:checked + span { background: var(--primary-color); }
 .toggle input:checked + span::before { transform: translateX(18px); }
+.toggle.small input:checked + span::before { transform: translateX(15px); }
 .toggle input:focus-visible + span { outline: 2px solid var(--primary-color); outline-offset: 2px; }
 button { cursor: pointer; border-radius: 6px; border: 1px solid var(--divider-color);
          background: var(--card-background-color); color: var(--primary-text-color);
@@ -510,11 +636,16 @@ option { background: var(--card-background-color); color: var(--primary-text-col
 .radios { display: flex; gap: 16px; flex-wrap: wrap; }
 .radios label { display: flex; align-items: center; gap: 6px; }
 .times { display: flex; flex-direction: column; gap: 6px; }
-.timerow { display: flex; align-items: center; gap: 6px; }
+.timerow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .interval { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
 .count { color: var(--secondary-text-color); font-size: .85em; padding-bottom: 10px; }
-.hint { color: var(--secondary-text-color); font-size: .8em; margin-top: 4px; }
-.timerow { flex-wrap: wrap; }
+/* Each step is a card within the editor, or a multi-step schedule becomes an
+   undifferentiated wall of time rows. */
+.stepedit { border: 1px solid var(--divider-color); border-radius: 8px;
+            padding: 4px 12px 12px; margin: 12px 0; }
+.stepedit.off { opacity: .6; }
+.stephead { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.stephead .step-name { flex: 1; font-weight: 500; }
 .modelbl { font-size: .8em; color: var(--secondary-text-color); }
 .modelbl.on { color: var(--primary-text-color); font-weight: 500; }
 .timerow select { padding: 7px 6px; }
@@ -563,7 +694,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: CARD,
   name: "SB Scheduler Card",
-  description: "Edit sb_scheduler schedules: day-set and time pattern.",
+  description: "Edit sb_scheduler schedules: day-set and per-step time patterns.",
   preview: false,
   documentationURL: "https://github.com/snadboy/sb-scheduler",
 });
