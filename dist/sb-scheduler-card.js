@@ -1,4 +1,4 @@
-/* SB Scheduler Card — v0.9.3
+/* SB Scheduler Card — v0.9.4
  *
  * A full editor for sb_scheduler schedules: create, delete, and edit name,
  * day-set, steps (add/remove), time patterns and ACTIONS.
@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.9.3";
+const VERSION = "0.9.4";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -93,14 +93,21 @@ const valueKind = (v) => {
   return "opaque";   // objects and arrays — e.g. notify's data: {tag, channel}
 };
 
-// "06:50" -> "6:50"; a schedule time is read, not sorted, so drop the pad.
-const hhmm = (t) => String(t ?? "").replace(/^0/, "");
+// "19:10" -> "7:10 PM". Every clock time the card renders goes through this.
+// It does NOT consult the browser locale: prettyTrigger used to and summarise
+// did not, so the same row could show "19:10" next to "07:10 PM".
+const clock12 = (t) => {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(t ?? "").trim());
+  if (!m) return String(t ?? "");
+  const h = Number(m[1]);
+  return `${h % 12 || 12}:${m[2]} ${h < 12 ? "AM" : "PM"}`;
+};
 
 // "6:50 (after sunrise)" — a resolved clock time alone hides the fact that it
 // tracks the sun and will be different tomorrow. The offset magnitude is
 // deliberately not shown; the resolved time already says when it fires.
 const describeTime = (d) => {
-  const clock = hhmm(d.time);
+  const clock = clock12(d.time);
   if (!d.event) return clock;
   const mins = Number(d.offset_minutes || 0);
   const when = mins === 0 ? "at" : mins > 0 ? "after" : "before";
@@ -112,11 +119,11 @@ const summarise = (step) => {
   const pattern = step.pattern || {};
   if (pattern.type === "interval") {
     return `every ${pattern.every_minutes} min, ` +
-      `${hhmm(String(pattern.start).slice(0, 5))}–${hhmm(String(pattern.stop).slice(0, 5))}`;
+      `${clock12(String(pattern.start).slice(0, 5))}–${clock12(String(pattern.stop).slice(0, 5))}`;
   }
   return (step.times_detail
     ? step.times_detail.map(describeTime)
-    : (step.times || []).map((t) => hhmm(String(t).slice(0, 5)))
+    : (step.times || []).map((t) => clock12(String(t).slice(0, 5)))
   ).join(", ");
 };
 
@@ -124,14 +131,15 @@ const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// "2026-09-21T06:30:00-05:00" -> "Mon 21 Sep, 06:30"
+// "2026-09-21T06:30:00-05:00" -> "Mon, Sep 21, 6:30 AM"
+// hour12 is forced rather than left to the locale, so this matches clock12.
 const prettyTrigger = (iso) => {
   if (!iso) return "not scheduled";
   const d = new Date(iso);
   if (isNaN(d)) return iso;
   return d.toLocaleString(undefined, {
     weekday: "short", day: "numeric", month: "short",
-    hour: "2-digit", minute: "2-digit",
+    hour: "numeric", minute: "2-digit", hour12: true,
   });
 };
 

@@ -103,6 +103,25 @@ all three services (`create_schedule`, `edit_schedule`, `remove_schedule`).
 - New steps are saved with **no `step_id`** so the backend allocates one; see
   `allocate_step_ids` in the integration for why positional ids collide.
 
+## One clock format (v0.9.4)
+
+Every clock time the card renders goes through `clock12` — 12-hour with AM/PM,
+**not** locale-dependent. Before this the card mixed three sources:
+`summarise` emitted 24-hour (`19:10`), `prettyTrigger` used the browser locale
+(`07:10 PM` here, 24-hour elsewhere), and `<input type="time">` follows the OS.
+So one row could read `19:10` on the times line and `07:10 PM` on Next.
+
+`prettyTrigger` now passes `hour12: true` explicitly rather than trusting the
+locale, so the two can't drift apart on a differently configured browser.
+
+Midnight and noon are the cases to check on any change here: `00:00` must be
+`12:00 AM` and `12:00` must be `12:00 PM` (`h % 12 || 12`).
+
+**`<input type="time">` cannot be controlled** — the browser renders it from
+the OS locale. It shows AM/PM on this setup; on a 24-hour locale the editor's
+pickers would disagree with the rest of the card, and the only fix would be
+replacing them with custom controls.
+
 ## Collapsible rows (v0.9.3)
 
 Each schedule's steps fold up behind a disclosure triangle. **The disclosure
