@@ -57,10 +57,12 @@ A schedule holds one or more **steps** (pattern + actions). The card reads
 `steps[]` off the switch entity; the top-level `pattern`/`times_detail` it used
 before no longer exist.
 
-- A **one-step schedule renders flat** — repeating its only step's name under
-  the schedule's own name is noise. Multi-step schedules get a line per step on
-  an indented rail, each with its own times, Last/Next, enable toggle and
-  Run now.
+- **Every schedule renders its steps on the rail**, one step or ten, each with
+  its own times, Last/Next, enable toggle and Run now (v0.9.2). Until then a
+  one-step schedule was flattened into the header to avoid repeating its only
+  step's name — but that hid the step name entirely and made a schedule's shape
+  depend on how many steps it happened to have. The schedule-level Run now went
+  with it: for a one-step schedule the step's own button is the same thing.
 - The editor gives each step its own bordered block. **Steps cannot be added or
   removed here**, because a step with no actions does nothing and actions are
   not editable in v1.

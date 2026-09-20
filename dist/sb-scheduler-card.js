@@ -1,4 +1,4 @@
-/* SB Scheduler Card — v0.9.1
+/* SB Scheduler Card — v0.9.2
  *
  * A full editor for sb_scheduler schedules: create, delete, and edit name,
  * day-set, steps (add/remove), time patterns and ACTIONS.
@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.9.1";
+const VERSION = "0.9.2";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -446,32 +446,28 @@ class SbSchedulerCard extends HTMLElement {
     return rows.map((s) => {
       const steps = this._steps(s);
       const on = s.state !== "off";
-      // A one-step schedule is shown flat: repeating its only step's name
-      // under its own is noise. Multi-step schedules get a line each.
-      const solo = steps.length === 1 ? steps[0] : null;
+      // EVERY schedule renders its steps on the rail, one step or ten. The
+      // one-step case used to be flattened into the header, which hid the
+      // step's name and made a schedule's shape depend on how many steps it
+      // happened to have.
       return `<div class="row ${on ? "" : "disabled"}">
         <div class="head">
           <div class="info">
             <div class="name">${esc(s.friendly_name)}</div>
             <div class="meta">
               <span class="chip">${esc(s.day_set)}</span>
-              ${solo ? `<span>${esc(summarise(solo))}</span>` : `<span>${steps.length} steps</span>`}
+              ${steps.length > 1 ? `<span>${steps.length} steps</span>` : ""}
             </div>
-            ${solo ? `
-              <div class="sub">Last: ${esc(solo.last_triggered ? prettyTrigger(solo.last_triggered) : "never")}</div>
-              <div class="sub">Next: ${on ? esc(prettyTrigger(solo.next_trigger)) : "—"}</div>` : ""}
           </div>
           <div class="controls">
             <label class="toggle" title="${on ? "Disable" : "Enable"} this schedule">
               <input type="checkbox" class="enable" data-entity="${esc(s.entity_id)}" ${on ? "checked" : ""}>
               <span></span>
             </label>
-            ${solo ? `<button class="run" data-entity="${esc(s.entity_id)}"
-                       title="Run the actions now, ignoring the day-set">Run now</button>` : ""}
             <button class="edit" data-id="${esc(s.schedule_id)}">Edit</button>
           </div>
         </div>
-        ${solo ? "" : `<div class="steps">${steps.map((step) => {
+        ${`<div class="steps">${steps.map((step) => {
           const stepOn = step.enabled !== false;
           return `<div class="step ${stepOn && on ? "" : "disabled"}">
             <div class="info">
