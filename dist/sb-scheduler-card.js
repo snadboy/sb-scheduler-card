@@ -1,4 +1,4 @@
-/* SB Scheduler Card — v0.9.2
+/* SB Scheduler Card — v0.9.3
  *
  * A full editor for sb_scheduler schedules: create, delete, and edit name,
  * day-set, steps (add/remove), time patterns and ACTIONS.
@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.9.2";
+const VERSION = "0.9.3";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -159,6 +159,26 @@ class SbSchedulerCard extends HTMLElement {
     this._open = null;   // schedule_id being edited, or "__new__"
     this._draft = null;  // local edit state; NEVER overwritten from hass
     this._sig = null;
+    this._collapsed = new Set(this._readCollapsed());
+  }
+
+  /* Which rows the viewer has folded up. This is a per-viewer convenience, so
+   * localStorage is the right home for it — but it can throw in a private
+   * window or with site data blocked, and it must never stop the card
+   * rendering. Hence try/catch on both sides and a plain Set as the truth. */
+  _readCollapsed() {
+    try {
+      return JSON.parse(localStorage.getItem("sb-scheduler-card.collapsed") || "[]");
+    } catch (err) {
+      return [];
+    }
+  }
+
+  _writeCollapsed() {
+    try {
+      localStorage.setItem("sb-scheduler-card.collapsed",
+        JSON.stringify([...this._collapsed]));
+    } catch (err) { /* nothing to do — the Set still holds this session */ }
   }
 
   setConfig(config) {
@@ -450,13 +470,23 @@ class SbSchedulerCard extends HTMLElement {
       // one-step case used to be flattened into the header, which hid the
       // step's name and made a schedule's shape depend on how many steps it
       // happened to have.
+      const shut = this._collapsed.has(s.schedule_id);
+      // Folded up, the row still has to say WHEN it runs — so the disclosure
+      // carries the summary: one step shows its time, several show the count.
+      const gist = steps.length === 1
+        ? summarise(steps[0])
+        : `${steps.length} steps`;
       return `<div class="row ${on ? "" : "disabled"}">
         <div class="head">
           <div class="info">
             <div class="name">${esc(s.friendly_name)}</div>
             <div class="meta">
               <span class="chip">${esc(s.day_set)}</span>
-              ${steps.length > 1 ? `<span>${steps.length} steps</span>` : ""}
+              <button class="disclose" data-id="${esc(s.schedule_id)}"
+                      aria-expanded="${shut ? "false" : "true"}"
+                      title="${shut ? "Show" : "Hide"} this schedule's steps">
+                <span class="tri ${shut ? "" : "open"}">▶</span>${esc(gist)}
+              </button>
             </div>
           </div>
           <div class="controls">
@@ -467,7 +497,7 @@ class SbSchedulerCard extends HTMLElement {
             <button class="edit" data-id="${esc(s.schedule_id)}">Edit</button>
           </div>
         </div>
-        ${`<div class="steps">${steps.map((step) => {
+        ${shut ? "" : `<div class="steps">${steps.map((step) => {
           const stepOn = step.enabled !== false;
           return `<div class="step ${stepOn && on ? "" : "disabled"}">
             <div class="info">
@@ -685,6 +715,15 @@ class SbSchedulerCard extends HTMLElement {
     root.querySelectorAll("button.edit").forEach((b) =>
       b.addEventListener("click", () => this._beginEdit(b.dataset.id)));
     root.querySelector("button.new")?.addEventListener("click", () => this._beginCreate());
+
+    root.querySelectorAll("button.disclose").forEach((b) =>
+      b.addEventListener("click", () => {
+        const id = b.dataset.id;
+        if (this._collapsed.has(id)) this._collapsed.delete(id);
+        else this._collapsed.add(id);
+        this._writeCollapsed();
+        this._render();
+      }));
 
     // Run now fires the actions immediately, ignoring the day-set. No confirm
     // step: the button is explicit and the consequence is one run of something
@@ -938,6 +977,15 @@ const STYLE = `
 .chip { background: var(--primary-color); color: var(--text-primary-color);
         border-radius: 10px; padding: 1px 8px; font-size: .85em; }
 .sub { color: var(--secondary-text-color); font-size: .85em; margin-top: 2px; }
+/* The disclosure is text, not a chrome button: it sits in the meta line and
+   reads as part of it, so it takes no border or padding of its own. */
+button.disclose { border: none; background: none; padding: 0; font: inherit;
+                  font-size: .9em; color: var(--secondary-text-color);
+                  display: inline-flex; align-items: center; gap: 5px; }
+button.disclose:hover { color: var(--primary-text-color); }
+.tri { display: inline-block; font-size: .7em; line-height: 1;
+       transition: transform .15s; color: var(--secondary-text-color); }
+.tri.open { transform: rotate(90deg); }
 /* Steps sit under their schedule, indented and on a rail, so a two-step
    schedule reads as one thing with two parts rather than two schedules. */
 .steps { margin: 6px 0 0 8px; padding-left: 12px;
