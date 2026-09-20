@@ -103,6 +103,21 @@ all three services (`create_schedule`, `edit_schedule`, `remove_schedule`).
 - New steps are saved with **no `step_id`** so the backend allocates one; see
   `allocate_step_ids` in the integration for why positional ids collide.
 
+## Collapsible rows (v0.9.3)
+
+Each schedule's steps fold up behind a disclosure triangle. **The disclosure
+carries the summary** — one step shows its time, several show the count — so a
+folded row still says when it runs; a bare triangle would have hidden that.
+
+Default is EXPANDED. Collapsing by default would have hidden Last/Next, which
+is information the user specifically asked to have on the row.
+
+The collapsed set lives in `localStorage` under `sb-scheduler-card.collapsed`.
+That is the right home for a per-viewer convenience, but both read and write
+are wrapped in try/catch — it throws in a private window or with site data
+blocked — and the in-memory `Set` is the truth, so the card renders correctly
+with no storage at all.
+
 ## Check for duplicate Lovelace resources after a HACS update
 
 After `ha_manage_hacs` downloaded v0.8.0, Lovelace had **two** resources:
