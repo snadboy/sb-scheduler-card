@@ -1,4 +1,4 @@
-/* SB Scheduler Card — v0.11.0
+/* SB Scheduler Card — v0.12.0
  *
  * A full editor for sb_scheduler schedules: create, delete, and edit name,
  * day-set, steps (add/remove), time patterns and ACTIONS.
@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.11.0";
+const VERSION = "0.12.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -344,6 +344,7 @@ class SbSchedulerCard extends HTMLElement {
   _beginEdit(scheduleId) {
     const s = this._schedules().find((x) => x.schedule_id === scheduleId);
     if (!s) return;
+    this._dsDialog = null;          // one dialog at a time
     this._open = scheduleId;
     this._draft = {
       creating: false,
@@ -372,6 +373,7 @@ class SbSchedulerCard extends HTMLElement {
 
   _beginCreate() {
     const daySets = this._daySets();
+    this._dsDialog = null;          // one dialog at a time
     this._open = "__new__";
     this._draft = {
       creating: true,
@@ -505,19 +507,24 @@ class SbSchedulerCard extends HTMLElement {
       this.shadowRoot.innerHTML = "";
       return;
     }
-    const body = this._open ? this._editorHtml() : this._listHtml();
-    // Day-sets live in a modal <dialog>, not in the card body: nine of them
-    // under the schedules made the main card a wall. showModal() puts the
-    // dialog in the browser's top layer, so it overlays the whole page from
-    // inside this shadow root with no HA dialog machinery involved.
+    // The card body is always the list. Both editors — schedules and
+    // day-sets — are modal <dialog>s: showModal() puts them in the browser's
+    // top layer, so they overlay the whole page from inside this shadow root
+    // with no HA dialog machinery involved, and the card never grows.
     this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card>${
       this._config.title ? `<h1 class="card-header">${esc(this._config.title)}</h1>` : ""
-    }<div class="body">${body}</div></ha-card>${this._dsDialogHtml()}`;
+    }<div class="body">${this._listHtml()}</div></ha-card>${this._scDialogHtml()}${this._dsDialogHtml()}`;
     this._wire();
-    const dlg = this.shadowRoot.querySelector("dialog.dsdialog");
-    if (dlg && !dlg.open) {
-      try { dlg.showModal(); } catch (err) { /* already open or detached */ }
-    }
+    this.shadowRoot.querySelectorAll("dialog").forEach((dlg) => {
+      if (!dlg.open) {
+        try { dlg.showModal(); } catch (err) { /* already open or detached */ }
+      }
+    });
+  }
+
+  _scDialogHtml() {
+    if (!this._open) return "";
+    return `<dialog class="scdialog"><div class="dsdialog-body">${this._editorHtml()}</div></dialog>`;
   }
 
   _dsDialogHtml() {
@@ -931,6 +938,8 @@ class SbSchedulerCard extends HTMLElement {
     const daySets = this._daySets();
     const known = daySets.some((x) => x.id === d.day_set);
     return `
+      <div class="dshead"><span class="dstitle">${d.creating ? "New schedule" : "Edit schedule"}</span>
+        <button class="scclose" title="Close">✕</button></div>
       ${d.error ? `<div class="error">${esc(d.error)}</div>` : ""}
       <label class="field"><span>Name</span>
         <input id="name" type="text" value="${esc(d.name)}"
@@ -1118,6 +1127,13 @@ class SbSchedulerCard extends HTMLElement {
   _wire() {
     const root = this.shadowRoot;
     this._wireDaySets(root);
+    const sc = root.querySelector("dialog.scdialog");
+    if (sc) {
+      sc.addEventListener("close", () => { if (this._open) this._cancel(); });
+      sc.addEventListener("click", (e) => { if (e.target === sc) this._cancel(); });
+      root.querySelectorAll("button.scclose").forEach((b) =>
+        b.addEventListener("click", () => this._cancel()));
+    }
     root.querySelectorAll("button.edit").forEach((b) =>
       b.addEventListener("click", () => this._beginEdit(b.dataset.id)));
     root.querySelector("button.new")?.addEventListener("click", () => this._beginCreate());
@@ -1490,12 +1506,16 @@ option { background: var(--card-background-color); color: var(--primary-text-col
 code { background: var(--secondary-background-color); padding: 1px 4px; border-radius: 3px; }
 /* --- day-sets: a modal dialog, so the main card stays just schedules --- */
 .addrow { display: flex; gap: 8px; flex-wrap: wrap; }
-dialog.dsdialog { border: none; border-radius: 12px; padding: 0;
+dialog.dsdialog, dialog.scdialog {
+                  border: none; border-radius: 12px; padding: 0;
                   width: min(720px, 95vw); max-height: 90vh;
                   background: var(--card-background-color, #fff);
                   color: var(--primary-text-color, #212121);
                   box-shadow: 0 8px 32px rgba(0,0,0,.35); }
-dialog.dsdialog::backdrop { background: rgba(0,0,0,.45); }
+dialog.dsdialog::backdrop, dialog.scdialog::backdrop { background: rgba(0,0,0,.45); }
+button.scclose { border: none; background: none; font-size: 1.1em; padding: 4px 8px;
+                 color: var(--secondary-text-color); }
+button.scclose:hover { color: var(--primary-text-color); }
 .dsdialog-body { padding: 12px 20px 20px; max-height: 90vh; overflow: auto; box-sizing: border-box; }
 .dshead { display: flex; align-items: center; justify-content: space-between;
           margin: 4px 0 8px; }

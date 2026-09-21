@@ -122,6 +122,22 @@ the OS locale. It shows AM/PM on this setup; on a 24-hour locale the editor's
 pickers would disagree with the rest of the card, and the only fix would be
 replacing them with custom controls.
 
+## Both editors are dialogs; the card body is ALWAYS the list (v0.12.0)
+
+The schedule editor got the same treatment as day-sets: `_scDialogHtml()`
+renders it into `<dialog class="scdialog">` when `_open` is set. `_render()`
+now always draws the list in the card body and appends whichever dialog is
+active; `showModal()` is called on every `<dialog>` present after each
+render. The two dialogs are mutually exclusive — `_beginEdit`/`_beginCreate`
+clear `_dsDialog`, and the day-set button is only reachable from the list
+(which is behind the modal while a schedule is open anyway).
+
+Close paths for the schedule dialog: Cancel and Save (both call `_cancel()`),
+the ✕ (`button.scclose` — distinct from `dsclose` so the two wirings never
+cross), Escape via the dialog's `close` event, and a backdrop click. The
+`.dsdialog-body` padding/scroll wrapper is shared; only the dialog class
+differs so each wiring can find its own.
+
 ## Day-sets live in a modal dialog (v0.11.0)
 
 v0.10.0 listed nine day-sets under the schedules and the main card became a
