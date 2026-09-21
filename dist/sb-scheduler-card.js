@@ -1,4 +1,4 @@
-/* SB Scheduler Card — v0.12.1
+/* SB Scheduler Card — v0.13.0
  *
  * A full editor for sb_scheduler schedules: create, delete, and edit name,
  * day-set, steps (add/remove), time patterns and ACTIONS.
@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.12.1";
+const VERSION = "0.13.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -338,7 +338,7 @@ class SbSchedulerCard extends HTMLElement {
   _signature() {
     const roster = this._roster().map((d) => `${d.id}:${d.next_date}:${JSON.stringify(d.config)}:${JSON.stringify(d.used_by)}`).join(";");
     return roster + "#" + this._schedules()
-      .map((s) => `${s.schedule_id}|${s.state}|${s.day_set}|${s.friendly_name}|` +
+      .map((s) => `${s.schedule_id}|${s.state}|${s.day_set}|${s.negate ? 1 : 0}|${s.friendly_name}|` +
         this._steps(s).map((t) =>
           `${t.step_id}:${t.name}:${t.enabled}:${t.next_trigger}:${t.last_triggered}` +
           `:${JSON.stringify(t.pattern)}:${JSON.stringify(t.actions)}`
@@ -357,6 +357,7 @@ class SbSchedulerCard extends HTMLElement {
       confirmDelete: false,
       name: s.friendly_name || "",
       day_set: s.day_set || "daily",
+      negate: !!s.negate,
       steps: this._steps(s).map((step) => {
         const pattern = step.pattern || {};
         const occurrences = (pattern.occurrences || []).map(parseOccurrence);
@@ -388,6 +389,7 @@ class SbSchedulerCard extends HTMLElement {
       confirmDelete: false,
       name: "",
       day_set: daySets.some((d) => d.id === "daily") ? "daily" : (daySets[0]?.id || "daily"),
+      negate: false,
       steps: [{ ...blankStep(), name: "Run" }],
       error: null,
       confirmDiscard: false,
@@ -478,11 +480,11 @@ class SbSchedulerCard extends HTMLElement {
     try {
       if (d.creating) {
         await this._hass.callService("sb_scheduler", "create_schedule", {
-          name: d.name.trim(), day_set: d.day_set, steps,
+          name: d.name.trim(), day_set: d.day_set, negate: d.negate, steps,
         });
       } else {
         await this._hass.callService("sb_scheduler", "edit_schedule", {
-          schedule_id: this._open, name: d.name.trim(), day_set: d.day_set, steps,
+          schedule_id: this._open, name: d.name.trim(), day_set: d.day_set, negate: d.negate, steps,
         });
       }
       this._cancel();
@@ -630,7 +632,7 @@ class SbSchedulerCard extends HTMLElement {
           <div class="info">
             <div class="name">${esc(s.friendly_name)}</div>
             <div class="meta">
-              <span class="chip">${esc(s.day_set)}</span>
+              <span class="chip ${s.negate ? "neg" : ""}">${s.negate ? "not " : ""}${esc(s.day_set)}</span>
               <button class="disclose" data-id="${esc(s.schedule_id)}"
                       aria-expanded="${shut ? "false" : "true"}"
                       title="${shut ? "Show" : "Hide"} this schedule's steps">
@@ -1050,6 +1052,8 @@ class SbSchedulerCard extends HTMLElement {
           ${daySets.map((x) => `<option value="${esc(x.id)}" ${x.id === d.day_set ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
           ${known ? "" : `<option value="${esc(d.day_set)}" selected>${esc(d.day_set)} (missing)</option>`}
         </select></label>
+      <label class="row-t negate"><input id="negate" type="checkbox" ${d.negate ? "checked" : ""}>
+        <span><b>Not</b> — run on every day that is <em>not</em> in this day-set</span></label>
       ${known ? "" : `<div class="warn">This schedule points at a day-set that no longer exists, so it cannot run.</div>`}
 
       ${d.steps.map((step, si) => this._stepHtml(step, si, d.steps.length)).join("")}
@@ -1295,6 +1299,7 @@ class SbSchedulerCard extends HTMLElement {
     if (name) name.addEventListener("input", () => { d.name = name.value; });
     const daySet = root.querySelector("#day_set");
     if (daySet) daySet.addEventListener("change", () => { d.day_set = daySet.value; });
+    root.querySelector("#negate")?.addEventListener("change", (e) => { d.negate = e.target.checked; });
 
     const onStep = (sel, apply, evt = "input") =>
       root.querySelectorAll(sel).forEach((el) =>
@@ -1504,6 +1509,10 @@ const STYLE = `
         color: var(--secondary-text-color); font-size: .9em; margin-top: 2px; }
 .chip { background: var(--primary-color); color: var(--text-primary-color);
         border-radius: 10px; padding: 1px 8px; font-size: .85em; }
+/* a negated day-set reads "not workday" on a hollow chip, so it can't be
+   mistaken for a day-set that happens to be called that */
+.chip.neg { background: none; color: var(--primary-color); border: 1px solid var(--primary-color); }
+.row-t.negate { margin: -4px 0 12px; font-size: .9em; }
 .sub { color: var(--secondary-text-color); font-size: .85em; margin-top: 2px; }
 /* The disclosure is text, not a chrome button: it sits in the meta line and
    reads as part of it, so it takes no border or padding of its own. */
