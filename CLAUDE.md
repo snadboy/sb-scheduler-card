@@ -122,6 +122,17 @@ the OS locale. It shows AM/PM on this setup; on a 24-hour locale the editor's
 pickers would disagree with the rest of the card, and the only fix would be
 replacing them with custom controls.
 
+## Day-sets come from the roster sensor (v0.9.5)
+
+`_daySets()` reads `sensor.sb_scheduler_day_sets` — the entity carrying
+`roster: sb_scheduler` and a `day_sets: [{id, name, calendar, …}]` attribute —
+and falls back to scanning `calendar.*` for `day_set_id` only when no roster
+exists (integration < 0.3.0). Reason: a derived day-set ("every other
+Tuesday", "Election Day") can now opt OUT of a calendar entity, and the old
+calendar scan would simply not list it, so it could never be chosen in
+Runs-on. Requires sb_scheduler ≥ 0.3.0 for the roster; keep the attribute
+shape in step with `sensor.py` there.
+
 ## Collapsible rows (v0.9.3)
 
 Each schedule's steps fold up behind a disclosure triangle. **The disclosure

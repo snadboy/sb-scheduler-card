@@ -1,4 +1,4 @@
-/* SB Scheduler Card — v0.9.4
+/* SB Scheduler Card — v0.9.5
  *
  * A full editor for sb_scheduler schedules: create, delete, and edit name,
  * day-set, steps (add/remove), time patterns and ACTIONS.
@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.9.4";
+const VERSION = "0.9.5";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -223,8 +223,20 @@ class SbSchedulerCard extends HTMLElement {
     return Array.isArray(s.steps) ? s.steps : [];
   }
 
+  /** Every day-set, from the integration's roster sensor.
+   *
+   * Scanning calendar entities used to be enough, but a derived day-set
+   * ("every other Tuesday", "Election Day") can opt out of having a calendar
+   * and must still be selectable here. The calendar scan stays as a fallback
+   * for an integration older than the roster. */
   _daySets() {
     const states = this._hass?.states || {};
+    const roster = Object.values(states).find((s) => s.attributes?.roster === "sb_scheduler");
+    if (roster && Array.isArray(roster.attributes.day_sets)) {
+      return roster.attributes.day_sets
+        .map((d) => ({ id: d.id, name: d.name || d.id }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
     return Object.keys(states)
       .filter((id) => id.startsWith("calendar.") && states[id].attributes?.day_set_id)
       .map((id) => ({
