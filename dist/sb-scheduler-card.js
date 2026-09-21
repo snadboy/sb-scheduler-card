@@ -1,4 +1,4 @@
-/* SB Scheduler Card — v0.10.0
+/* SB Scheduler Card — v0.11.0
  *
  * A full editor for sb_scheduler schedules: create, delete, and edit name,
  * day-set, steps (add/remove), time patterns and ACTIONS.
@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.10.0";
+const VERSION = "0.11.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -176,7 +176,8 @@ class SbSchedulerCard extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._open = null;   // schedule_id being edited, or "__new__"
     this._draft = null;  // local edit state; NEVER overwritten from hass
-    this._dsOpen = null;   // day-set id being edited, or "__new__"
+    this._dsDialog = null; // null = closed, "list" = the day-set dialog is up
+    this._dsOpen = null;   // day-set id being edited inside it, or "__new__"
     this._dsDraft = null;  // same rule: local, never overwritten from hass
     this._sig = null;
     this._collapsed = new Set(this._readCollapsed());
@@ -504,19 +505,42 @@ class SbSchedulerCard extends HTMLElement {
       this.shadowRoot.innerHTML = "";
       return;
     }
-    const body = this._open ? this._editorHtml()
-      : this._dsOpen ? this._dsEditorHtml()
-      : this._listHtml();
+    const body = this._open ? this._editorHtml() : this._listHtml();
+    // Day-sets live in a modal <dialog>, not in the card body: nine of them
+    // under the schedules made the main card a wall. showModal() puts the
+    // dialog in the browser's top layer, so it overlays the whole page from
+    // inside this shadow root with no HA dialog machinery involved.
     this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card>${
       this._config.title ? `<h1 class="card-header">${esc(this._config.title)}</h1>` : ""
-    }<div class="body">${body}</div></ha-card>`;
+    }<div class="body">${body}</div></ha-card>${this._dsDialogHtml()}`;
     this._wire();
+    const dlg = this.shadowRoot.querySelector("dialog.dsdialog");
+    if (dlg && !dlg.open) {
+      try { dlg.showModal(); } catch (err) { /* already open or detached */ }
+    }
+  }
+
+  _dsDialogHtml() {
+    if (!this._dsDialog) return "";
+    return `<dialog class="dsdialog"><div class="dsdialog-body">${
+      this._dsOpen ? this._dsEditorHtml() : this._dsListHtml()
+    }</div></dialog>`;
+  }
+
+  _dsClose() {
+    this._dsDialog = null;
+    this._dsOpen = null;
+    this._dsDraft = null;
+    this._sig = null;
+    this._render();
   }
 
   _listHtml() {
     const rows = this._schedules();
-    const add = `<div class="addrow"><button class="new">+ New schedule</button></div>`
-      + this._dsListHtml();
+    const add = `<div class="addrow">
+      <button class="new">+ New schedule</button>
+      <button class="dsopen" title="Create and edit the day-sets schedules run on">Day-sets…</button>
+    </div>`;
     if (!rows.length) {
       return `<div class="empty">No schedules yet.</div>${add}`;
     }
@@ -608,7 +632,10 @@ class SbSchedulerCard extends HTMLElement {
 
   _dsListHtml() {
     const rows = this._roster();
-    return `<div class="sect-head">Day-sets</div>
+    return `<div class="dshead"><span class="dstitle">Day-sets</span>
+        <button class="dsclose" title="Close">✕</button></div>
+      <div class="hint">Named groups of dates that schedules run on. Build one from weekdays, calendars, typed dates or another day-set, then narrow it to a cadence or an ordinal.</div>
+      ${rows.length ? "" : `<div class="empty">No day-sets yet.</div>`}
       ${rows.map((d) => {
         const inUse = (d.used_by?.schedules?.length || 0) + (d.used_by?.day_sets?.length || 0);
         return `<div class="dsrow">
@@ -760,14 +787,14 @@ class SbSchedulerCard extends HTMLElement {
       <div class="field"><span>Calendars</span>
         <input id="ds_calfilter" type="text" placeholder="Filter calendars…" value="${esc(d.calFilter)}">
         ${this._calPickerHtml("base_calendars", d.base_calendars, d.calFilter)}</div>
-      <label class="field"><span>Dates <span class="hint">2026-12-25, 2027-06-05..2027-08-17</span></span>
-        <textarea id="ds_base_dates" rows="2">${esc(d.base_dates)}</textarea></label>`;
+      <label class="field"><span>Dates</span>
+        <textarea id="ds_base_dates" rows="2" placeholder="2026-12-25, 2027-06-05..2027-08-17">${esc(d.base_dates)}</textarea></label>`;
 
     const cancelled = `
       <div class="field"><span>Cancelled by these calendars</span>
         ${this._calPickerHtml("exclude_calendars", d.exclude_calendars, d.calFilter)}</div>
       <label class="field"><span>…and these dates</span>
-        <textarea id="ds_exclude_dates" rows="2">${esc(d.exclude_dates)}</textarea></label>
+        <textarea id="ds_exclude_dates" rows="2" placeholder="2026-12-25, 2027-06-05..2027-08-17">${esc(d.exclude_dates)}</textarea></label>
       <label class="field"><span>Only cancel when the entry matches</span>
         <input id="ds_exclude_match" type="text" value="${esc(d.exclude_match)}"></label>`;
 
@@ -775,7 +802,7 @@ class SbSchedulerCard extends HTMLElement {
       <div class="field"><span>Always included by these calendars</span>
         ${this._calPickerHtml("force_calendars", d.force_calendars, d.calFilter)}</div>
       <label class="field"><span>…and these dates</span>
-        <textarea id="ds_force_dates" rows="2">${esc(d.force_dates)}</textarea></label>
+        <textarea id="ds_force_dates" rows="2" placeholder="2026-12-25, 2027-06-05..2027-08-17">${esc(d.force_dates)}</textarea></label>
       <label class="field"><span>Only force when the entry matches</span>
         <input id="ds_force_match" type="text" value="${esc(d.force_match)}"></label>`;
 
@@ -806,8 +833,9 @@ class SbSchedulerCard extends HTMLElement {
       <label class="row-t"><input id="ds_expose" type="checkbox" ${d.expose_calendar ? "checked" : ""}> Show as a calendar entity</label>`;
 
     return `
+      <div class="dshead"><span class="dstitle">${d.creating ? "New day-set" : "Edit day-set"}</span>
+        <button class="dsclose" title="Close">✕</button></div>
       ${d.error ? `<div class="error">${esc(d.error)}</div>` : ""}
-      <div class="dstitle">${d.creating ? "New day-set" : "Edit day-set"}</div>
       <label class="field"><span>Name</span><input id="ds_name" type="text" value="${esc(d.name)}"></label>
       ${sec("Sources — where the dates come from", sources, true)}
       ${sec("Cancelled — what takes a day back out", cancelled, d.exclude_calendars.length || d.exclude_dates)}
@@ -829,6 +857,19 @@ class SbSchedulerCard extends HTMLElement {
   }
 
   _wireDaySets(root) {
+    root.querySelector("button.dsopen")?.addEventListener("click", () => {
+      this._dsDialog = "list";
+      this._render();
+    });
+    const dlg = root.querySelector("dialog.dsdialog");
+    if (dlg) {
+      // Escape fires 'cancel' then 'close'; the ✕ buttons and a click on the
+      // backdrop (the dialog element itself, outside its body) close too.
+      dlg.addEventListener("close", () => { if (this._dsDialog) this._dsClose(); });
+      dlg.addEventListener("click", (e) => { if (e.target === dlg) this._dsClose(); });
+      root.querySelectorAll("button.dsclose").forEach((b) =>
+        b.addEventListener("click", () => this._dsClose()));
+    }
     root.querySelectorAll("button.dsedit").forEach((b) =>
       b.addEventListener("click", () => this._beginDsEdit(b.dataset.id)));
     root.querySelector("button.dsnew")?.addEventListener("click", () => this._beginDsCreate());
@@ -1447,9 +1488,21 @@ option { background: var(--card-background-color); color: var(--primary-text-col
          padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; }
 .warn { color: var(--warning-color); font-size: .85em; margin: -6px 0 8px; }
 code { background: var(--secondary-background-color); padding: 1px 4px; border-radius: 3px; }
-/* --- day-sets --- */
-.sect-head { font-weight: 600; margin: 20px 0 4px; padding-top: 12px;
-             border-top: 1px solid var(--divider-color); }
+/* --- day-sets: a modal dialog, so the main card stays just schedules --- */
+.addrow { display: flex; gap: 8px; flex-wrap: wrap; }
+dialog.dsdialog { border: none; border-radius: 12px; padding: 0;
+                  width: min(720px, 95vw); max-height: 90vh;
+                  background: var(--card-background-color, #fff);
+                  color: var(--primary-text-color, #212121);
+                  box-shadow: 0 8px 32px rgba(0,0,0,.35); }
+dialog.dsdialog::backdrop { background: rgba(0,0,0,.45); }
+.dsdialog-body { padding: 12px 20px 20px; max-height: 90vh; overflow: auto; box-sizing: border-box; }
+.dshead { display: flex; align-items: center; justify-content: space-between;
+          margin: 4px 0 8px; }
+.dshead .dstitle { margin: 0; }
+button.dsclose { border: none; background: none; font-size: 1.1em; padding: 4px 8px;
+                 color: var(--secondary-text-color); }
+button.dsclose:hover { color: var(--primary-text-color); }
 .dsrow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 0;
          border-bottom: 1px solid var(--divider-color); }
 .dsrow:last-of-type { border-bottom: none; }

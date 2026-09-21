@@ -122,6 +122,27 @@ the OS locale. It shows AM/PM on this setup; on a 24-hour locale the editor's
 pickers would disagree with the rest of the card, and the only fix would be
 replacing them with custom controls.
 
+## Day-sets live in a modal dialog (v0.11.0)
+
+v0.10.0 listed nine day-sets under the schedules and the main card became a
+wall — user: "much too cluttered". Day-sets now open from one **Day-sets…**
+button into a native `<dialog>` shown with `showModal()`. That puts it in the
+browser's **top layer**, so it overlays the whole page from inside this
+shadow root with no HA dialog machinery (`ha-dialog` is internal and
+`browser_mod` would be a dependency). List and editor swap inside the same
+dialog; Cancel returns to the list, Escape / ✕ / a backdrop click close it.
+
+- `_render()` rebuilds `innerHTML`, which destroys the `<dialog>`, so every
+  render re-creates it and calls `showModal()` again if `_dsDialog` is set.
+  A re-render while the LIST is showing is wanted (the roster refreshes after
+  a save); while the EDITOR is showing, `set hass` still returns early.
+- Escape fires the dialog's `close` event → `_dsClose()`. A backdrop click is
+  a click whose target is the `<dialog>` element itself (not its body).
+- The dialog is styled with `--card-background-color` / `--primary-text-color`
+  and a translucent `::backdrop`; `color-scheme: light dark` on `:host` keeps
+  native controls themed inside it.
+- Verified headless: `dialog:modal` matches while open (proves top layer).
+
 ## Day-set editing in the card (v0.10.0)
 
 The card now creates, edits and deletes day-sets — "one visual place for every
