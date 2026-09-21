@@ -1,4 +1,4 @@
-/* SB Scheduler Card — v0.9.5
+/* SB Scheduler Card — v0.10.0
  *
  * A full editor for sb_scheduler schedules: create, delete, and edit name,
  * day-set, steps (add/remove), time patterns and ACTIONS.
@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.9.5";
+const VERSION = "0.10.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -143,6 +143,16 @@ const prettyTrigger = (iso) => {
   });
 };
 
+const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "2026-11-03" -> "Tue, Nov 3" — a day-set date has no time of day.
+const prettyDate = (iso) => {
+  const d = new Date(iso + "T12:00:00");
+  if (isNaN(d)) return iso;
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+};
+
 const blankStep = () => ({
   step_id: null,           // no id — the backend allocates a fresh one
   name: "",
@@ -166,6 +176,8 @@ class SbSchedulerCard extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._open = null;   // schedule_id being edited, or "__new__"
     this._draft = null;  // local edit state; NEVER overwritten from hass
+    this._dsOpen = null;   // day-set id being edited, or "__new__"
+    this._dsDraft = null;  // same rule: local, never overwritten from hass
     this._sig = null;
     this._collapsed = new Set(this._readCollapsed());
   }
@@ -197,8 +209,8 @@ class SbSchedulerCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    // While the editor is open, re-rendering would discard half-typed input.
-    if (this._open) return;
+    // While an editor is open, re-rendering would discard half-typed input.
+    if (this._open || this._dsOpen) return;
     const sig = this._signature();
     if (sig !== this._sig) {
       this._sig = sig;
@@ -296,8 +308,29 @@ class SbSchedulerCard extends HTMLElement {
     return this._hass?.services?.[action.domain]?.[action.service]?.fields?.[key] || {};
   }
 
+  /** The full roster entries — config and dependents included — for editing. */
+  _roster() {
+    const states = this._hass?.states || {};
+    const roster = Object.values(states).find((s) => s.attributes?.roster === "sb_scheduler");
+    return roster && Array.isArray(roster.attributes.day_sets)
+      ? [...roster.attributes.day_sets].sort((a, b) => String(a.name).localeCompare(String(b.name)))
+      : [];
+  }
+
+  /** Calendars a day-set may read: every calendar.* except the ones this
+   *  integration publishes itself — building on those is what base_day_set
+   *  is for, and it would be circular through the entity anyway. */
+  _calendarOptions() {
+    const states = this._hass?.states || {};
+    return Object.keys(states)
+      .filter((id) => id.startsWith("calendar.") && !states[id].attributes?.day_set_id)
+      .map((id) => ({ id, name: states[id].attributes?.friendly_name || id }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   _signature() {
-    return this._schedules()
+    const roster = this._roster().map((d) => `${d.id}:${d.next_date}:${JSON.stringify(d.config)}:${JSON.stringify(d.used_by)}`).join(";");
+    return roster + "#" + this._schedules()
       .map((s) => `${s.schedule_id}|${s.state}|${s.day_set}|${s.friendly_name}|` +
         this._steps(s).map((t) =>
           `${t.step_id}:${t.name}:${t.enabled}:${t.next_trigger}:${t.last_triggered}` +
@@ -471,15 +504,19 @@ class SbSchedulerCard extends HTMLElement {
       this.shadowRoot.innerHTML = "";
       return;
     }
+    const body = this._open ? this._editorHtml()
+      : this._dsOpen ? this._dsEditorHtml()
+      : this._listHtml();
     this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card>${
       this._config.title ? `<h1 class="card-header">${esc(this._config.title)}</h1>` : ""
-    }<div class="body">${this._open ? this._editorHtml() : this._listHtml()}</div></ha-card>`;
+    }<div class="body">${body}</div></ha-card>`;
     this._wire();
   }
 
   _listHtml() {
     const rows = this._schedules();
-    const add = `<div class="addrow"><button class="new">+ New schedule</button></div>`;
+    const add = `<div class="addrow"><button class="new">+ New schedule</button></div>`
+      + this._dsListHtml();
     if (!rows.length) {
       return `<div class="empty">No schedules yet.</div>${add}`;
     }
@@ -539,6 +576,313 @@ class SbSchedulerCard extends HTMLElement {
         }).join("")}</div>`}
       </div>`;
     }).join("") + add;
+  }
+
+  /* --- day-sets ----------------------------------------------------------
+   * Read from the roster sensor's `config` (the stored dict, verbatim),
+   * written through sb_scheduler.set_day_set / remove_day_set. The backend
+   * validates with the same function the Configure form uses, so an error
+   * here is the same error you would get there — just shown in the card.
+   */
+
+  _dsSummary(d) {
+    const c = d.config || {};
+    const out = [];
+    const wd = c.weekdays || [];
+    if (wd.length === 7) out.push("every day");
+    else if (wd.length) out.push(wd.map((w) => w[0].toUpperCase() + w.slice(1)).join(" "));
+    if (c.base_day_set) {
+      const b = this._roster().find((x) => x.id === c.base_day_set);
+      out.push(`on ${b ? b.name : c.base_day_set}`);
+    }
+    const cals = (c.base_calendars || c.include_calendars || []).length;
+    if (cals) out.push(`${cals} calendar${cals > 1 ? "s" : ""}`);
+    if (c.base_dates || c.include_dates) out.push("dates");
+    if ((c.exclude_calendars || []).length || c.exclude_dates) out.push("minus cancellations");
+    if (d.pick) out.push(d.pick);
+    if (d.months) out.push(d.months.map((m) => MONTHS[m - 1]).join("/"));
+    if (c.invert) out.push("inverted");
+    if (c.offset_days) out.push(`${c.offset_days > 0 ? "+" : ""}${c.offset_days} d`);
+    return out.join(" · ");
+  }
+
+  _dsListHtml() {
+    const rows = this._roster();
+    return `<div class="sect-head">Day-sets</div>
+      ${rows.map((d) => {
+        const inUse = (d.used_by?.schedules?.length || 0) + (d.used_by?.day_sets?.length || 0);
+        return `<div class="dsrow">
+          <div class="info">
+            <div class="name">${esc(d.name)}
+              ${d.calendar ? "" : `<span class="nocal" title="No calendar entity">no calendar</span>`}</div>
+            <div class="meta"><span>${esc(this._dsSummary(d))}</span></div>
+            <div class="sub">Next: ${esc(d.next_date ? prettyDate(d.next_date) : "none in horizon")}${
+              inUse ? ` · used by ${inUse}` : ""}</div>
+          </div>
+          <div class="controls">
+            <button class="dsedit" data-id="${esc(d.id)}">Edit</button>
+          </div>
+        </div>`;
+      }).join("")}
+      <div class="addrow"><button class="dsnew">+ New day-set</button></div>`;
+  }
+
+  _beginDsEdit(id) {
+    const d = this._roster().find((x) => x.id === id);
+    if (!d) return;
+    const c = d.config || {};
+    this._dsOpen = id;
+    this._dsDraft = {
+      creating: false, confirmDelete: false, error: null,
+      usedBy: d.used_by || { schedules: [], day_sets: [] },
+      name: c.name || d.name || "",
+      weekdays: [...(c.weekdays || [])],
+      base_day_set: c.base_day_set || "",
+      base_calendars: [...(c.base_calendars || c.include_calendars || [])],
+      base_dates: c.base_dates || c.include_dates || "",
+      exclude_calendars: [...(c.exclude_calendars || [])],
+      exclude_dates: c.exclude_dates || "",
+      exclude_match: c.exclude_match || "",
+      force_calendars: [...(c.force_calendars || [])],
+      force_dates: c.force_dates || "",
+      force_match: c.force_match || "",
+      pick: c.pick || "none",
+      pick_every: Number(c.pick_every || 2),
+      pick_anchor: c.pick_anchor || "",
+      pick_nth: String(c.pick_nth || "1"),
+      months: (c.months || []).map(String),
+      invert: !!c.invert,
+      offset_days: Number(c.offset_days || 0),
+      expose_calendar: c.expose_calendar !== false,
+      calFilter: "",
+    };
+    this._render();
+  }
+
+  _beginDsCreate() {
+    this._dsOpen = "__new__";
+    this._dsDraft = {
+      creating: true, confirmDelete: false, error: null,
+      usedBy: { schedules: [], day_sets: [] },
+      name: "", weekdays: [], base_day_set: "", base_calendars: [], base_dates: "",
+      exclude_calendars: [], exclude_dates: "", exclude_match: "",
+      force_calendars: [], force_dates: "", force_match: "",
+      pick: "none", pick_every: 2, pick_anchor: "", pick_nth: "1", months: [],
+      invert: false, offset_days: 0, expose_calendar: false, calFilter: "",
+    };
+    this._render();
+  }
+
+  _dsCancel() {
+    this._dsOpen = null;
+    this._dsDraft = null;
+    this._sig = null;
+    this._render();
+  }
+
+  _dsValidate(d) {
+    const datesOk = (s) => /^\s*(\d{4}-\d{2}-\d{2}(\s*\.\.\s*\d{4}-\d{2}-\d{2})?\s*(,|\n|$)\s*)*$/.test(s || "");
+    if (!d.name.trim()) return "A day-set needs a name.";
+    for (const [k, label] of [["base_dates", "Dates"], ["exclude_dates", "Cancelled dates"], ["force_dates", "Always dates"]]) {
+      if (!datesOk(d[k])) return `${label}: use YYYY-MM-DD, commas between, ranges as YYYY-MM-DD..YYYY-MM-DD.`;
+    }
+    if (d.pick === "every" && !d.pick_anchor) return '"Every Nth" needs a starting date.';
+    if (d.pick === "every" && !(d.pick_every >= 1)) return "Every N must be at least 1.";
+    return null;
+  }
+
+  async _dsSave() {
+    const d = this._dsDraft;
+    const error = this._dsValidate(d);
+    if (error) { d.error = error; this._render(); return; }
+    const data = {
+      name: d.name.trim(),
+      weekdays: d.weekdays, base_day_set: d.base_day_set,
+      base_calendars: d.base_calendars, base_dates: d.base_dates.trim(),
+      exclude_calendars: d.exclude_calendars, exclude_dates: d.exclude_dates.trim(),
+      exclude_match: d.exclude_match.trim(),
+      force_calendars: d.force_calendars, force_dates: d.force_dates.trim(),
+      force_match: d.force_match.trim(),
+      pick: d.pick, pick_every: Number(d.pick_every), pick_anchor: d.pick_anchor,
+      pick_nth: d.pick_nth, months: d.months,
+      invert: d.invert, offset_days: Number(d.offset_days), expose_calendar: d.expose_calendar,
+    };
+    if (!d.creating) data.id = this._dsOpen;
+    try {
+      await this._hass.callService("sb_scheduler", "set_day_set", data);
+      this._dsCancel();
+    } catch (err) {
+      d.error = `Save failed: ${err?.message || err}`;
+      this._render();
+    }
+  }
+
+  async _dsDelete() {
+    try {
+      await this._hass.callService("sb_scheduler", "remove_day_set", { id: this._dsOpen });
+      this._dsCancel();
+    } catch (err) {
+      this._dsDraft.error = `Delete failed: ${err?.message || err}`;
+      this._dsDraft.confirmDelete = false;
+      this._render();
+    }
+  }
+
+  _calPickerHtml(field, chosen, filter) {
+    const q = String(filter || "").toLowerCase();
+    const opts = this._calendarOptions().filter((c) =>
+      chosen.includes(c.id) || !q || c.id.toLowerCase().includes(q) || c.name.toLowerCase().includes(q));
+    return `<div class="calpick" data-f="${field}">
+      ${opts.map((c) => `<label class="calopt">
+        <input type="checkbox" class="cal" data-f="${field}" data-e="${esc(c.id)}" ${chosen.includes(c.id) ? "checked" : ""}>
+        <span>${esc(c.name)}</span><span class="calid">${esc(c.id)}</span></label>`).join("")}
+      ${opts.length ? "" : `<div class="hint">No calendars match.</div>`}
+    </div>`;
+  }
+
+  _dsEditorHtml() {
+    const d = this._dsDraft;
+    const others = this._roster().filter((x) => x.id !== this._dsOpen);
+    const inUse = [...(d.usedBy.schedules || []).map((s) => `schedule “${s}”`),
+                   ...(d.usedBy.day_sets || []).map((s) => `day-set “${s}”`)];
+    const open = (has) => (has ? "open" : "");
+    const sec = (title, body, has, extra = "") =>
+      `<details class="dsec" ${open(has)}><summary>${title}${extra}</summary><div class="dsecbody">${body}</div></details>`;
+
+    const sources = `
+      <div class="field"><span>Weekdays</span>
+        <div class="chips">${WEEKDAYS.map((w) => `<label class="chip-t ${d.weekdays.includes(w) ? "on" : ""}">
+          <input type="checkbox" class="wd" value="${w}" ${d.weekdays.includes(w) ? "checked" : ""}>${w[0].toUpperCase() + w.slice(1)}</label>`).join("")}</div></div>
+      <label class="field"><span>Built on another day-set</span>
+        <select id="ds_base"><option value="" ${d.base_day_set ? "" : "selected"}>—</option>
+          ${others.map((o) => `<option value="${esc(o.id)}" ${o.id === d.base_day_set ? "selected" : ""}>${esc(o.name)}</option>`).join("")}
+        </select></label>
+      <div class="field"><span>Calendars</span>
+        <input id="ds_calfilter" type="text" placeholder="Filter calendars…" value="${esc(d.calFilter)}">
+        ${this._calPickerHtml("base_calendars", d.base_calendars, d.calFilter)}</div>
+      <label class="field"><span>Dates <span class="hint">2026-12-25, 2027-06-05..2027-08-17</span></span>
+        <textarea id="ds_base_dates" rows="2">${esc(d.base_dates)}</textarea></label>`;
+
+    const cancelled = `
+      <div class="field"><span>Cancelled by these calendars</span>
+        ${this._calPickerHtml("exclude_calendars", d.exclude_calendars, d.calFilter)}</div>
+      <label class="field"><span>…and these dates</span>
+        <textarea id="ds_exclude_dates" rows="2">${esc(d.exclude_dates)}</textarea></label>
+      <label class="field"><span>Only cancel when the entry matches</span>
+        <input id="ds_exclude_match" type="text" value="${esc(d.exclude_match)}"></label>`;
+
+    const always = `
+      <div class="field"><span>Always included by these calendars</span>
+        ${this._calPickerHtml("force_calendars", d.force_calendars, d.calFilter)}</div>
+      <label class="field"><span>…and these dates</span>
+        <textarea id="ds_force_dates" rows="2">${esc(d.force_dates)}</textarea></label>
+      <label class="field"><span>Only force when the entry matches</span>
+        <input id="ds_force_match" type="text" value="${esc(d.force_match)}"></label>`;
+
+    const pick = `
+      <label class="field"><span>Pick</span>
+        <select id="ds_pick">
+          <option value="none" ${d.pick === "none" ? "selected" : ""}>Every eligible date</option>
+          <option value="every" ${d.pick === "every" ? "selected" : ""}>Every Nth eligible date, from a starting date</option>
+          <option value="nth_of_month" ${d.pick === "nth_of_month" ? "selected" : ""}>The Nth (or last) eligible date of each month</option>
+        </select></label>
+      ${d.pick === "every" ? `
+        <div class="pair">
+          <label class="field inline"><span>Every N</span><input id="ds_every" type="number" min="1" max="366" value="${esc(d.pick_every)}"></label>
+          <label class="field inline"><span>Starting on</span><input id="ds_anchor" type="date" value="${esc(d.pick_anchor)}"></label>
+        </div>
+        <div class="hint">Counts eligible dates, not calendar days — every 14th day from a Tuesday is every other Tuesday.</div>` : ""}
+      ${d.pick === "nth_of_month" ? `
+        <label class="field"><span>Which one each month</span>
+          <select id="ds_nth">${["1", "2", "3", "4", "5", "last"].map((n) =>
+            `<option value="${n}" ${d.pick_nth === n ? "selected" : ""}>${{ "1": "First", "2": "Second", "3": "Third", "4": "Fourth", "5": "Fifth", "last": "Last" }[n]}</option>`).join("")}</select></label>` : ""}
+      <div class="field"><span>Only in these months</span>
+        <div class="chips">${MONTHS.map((m, i) => { const v = String(i + 1); const on = d.months.includes(v);
+          return `<label class="chip-t ${on ? "on" : ""}"><input type="checkbox" class="mo" value="${v}" ${on ? "checked" : ""}>${m}</label>`; }).join("")}</div></div>`;
+
+    const advanced = `
+      <label class="row-t"><input id="ds_invert" type="checkbox" ${d.invert ? "checked" : ""}> Invert (every date NOT in this set)</label>
+      <label class="field"><span>Shift by (days)</span><input id="ds_offset" type="number" min="-30" max="30" value="${esc(d.offset_days)}"></label>
+      <label class="row-t"><input id="ds_expose" type="checkbox" ${d.expose_calendar ? "checked" : ""}> Show as a calendar entity</label>`;
+
+    return `
+      ${d.error ? `<div class="error">${esc(d.error)}</div>` : ""}
+      <div class="dstitle">${d.creating ? "New day-set" : "Edit day-set"}</div>
+      <label class="field"><span>Name</span><input id="ds_name" type="text" value="${esc(d.name)}"></label>
+      ${sec("Sources — where the dates come from", sources, true)}
+      ${sec("Cancelled — what takes a day back out", cancelled, d.exclude_calendars.length || d.exclude_dates)}
+      ${sec("Always — what overrides a cancellation", always, d.force_calendars.length || d.force_dates)}
+      ${sec("Pick — cadence, ordinal, months", pick, d.pick !== "none" || d.months.length)}
+      ${sec("Advanced", advanced, d.invert || d.offset_days || !d.expose_calendar)}
+      ${d.confirmDelete ? `
+        <div class="confirm">Delete this day-set?
+          <div class="buttons"><button class="dsnodelete">Keep it</button><button class="dsdodelete danger">Delete</button></div>
+        </div>` : `
+        <div class="buttons">
+          ${d.creating ? "" : inUse.length
+            ? `<span class="hint">In use by ${esc(inUse.join(", "))} — change those to delete.</span>`
+            : `<button class="dsaskdelete danger-text">Delete day-set</button>`}
+          <span class="spacer"></span>
+          <button class="dscancel">Cancel</button>
+          <button class="dssave save">${d.creating ? "Create" : "Save"}</button>
+        </div>`}`;
+  }
+
+  _wireDaySets(root) {
+    root.querySelectorAll("button.dsedit").forEach((b) =>
+      b.addEventListener("click", () => this._beginDsEdit(b.dataset.id)));
+    root.querySelector("button.dsnew")?.addEventListener("click", () => this._beginDsCreate());
+    if (!this._dsOpen) return;
+    const d = this._dsDraft;
+    const bind = (id, key, fn = (v) => v, evt = "input") => {
+      const el = root.querySelector(`#${id}`);
+      if (el) el.addEventListener(evt, () => { d[key] = fn(el.value); d.error = null; });
+    };
+    bind("ds_name", "name");
+    bind("ds_base_dates", "base_dates");
+    bind("ds_exclude_dates", "exclude_dates");
+    bind("ds_exclude_match", "exclude_match");
+    bind("ds_force_dates", "force_dates");
+    bind("ds_force_match", "force_match");
+    bind("ds_every", "pick_every", Number);
+    bind("ds_anchor", "pick_anchor");
+    bind("ds_offset", "offset_days", Number);
+    bind("ds_base", "base_day_set", (v) => v, "change");
+    bind("ds_nth", "pick_nth", (v) => v, "change");
+    root.querySelector("#ds_pick")?.addEventListener("change", (e) => { d.pick = e.target.value; d.error = null; this._render(); });
+    root.querySelector("#ds_invert")?.addEventListener("change", (e) => { d.invert = e.target.checked; });
+    root.querySelector("#ds_expose")?.addEventListener("change", (e) => { d.expose_calendar = e.target.checked; });
+    root.querySelectorAll("input.wd").forEach((box) => box.addEventListener("change", () => {
+      d.weekdays = WEEKDAYS.filter((w) => w === box.value ? box.checked : d.weekdays.includes(w));
+      box.closest("label").classList.toggle("on", box.checked);
+    }));
+    root.querySelectorAll("input.mo").forEach((box) => box.addEventListener("change", () => {
+      d.months = box.checked ? [...new Set([...d.months, box.value])] : d.months.filter((m) => m !== box.value);
+      box.closest("label").classList.toggle("on", box.checked);
+    }));
+    root.querySelectorAll("input.cal").forEach((box) => box.addEventListener("change", () => {
+      const f = box.dataset.f, e = box.dataset.e;
+      d[f] = box.checked ? [...new Set([...d[f], e])] : d[f].filter((x) => x !== e);
+    }));
+    // The filter re-renders the three pickers IN PLACE so typing keeps focus.
+    const filt = root.querySelector("#ds_calfilter");
+    if (filt) filt.addEventListener("input", () => {
+      d.calFilter = filt.value;
+      for (const f of ["base_calendars", "exclude_calendars", "force_calendars"]) {
+        const box = root.querySelector(`.calpick[data-f="${f}"]`);
+        if (!box) continue;
+        box.outerHTML = this._calPickerHtml(f, d[f], d.calFilter);
+      }
+      root.querySelectorAll("input.cal").forEach((box) => box.addEventListener("change", () => {
+        const f = box.dataset.f, e = box.dataset.e;
+        d[f] = box.checked ? [...new Set([...d[f], e])] : d[f].filter((x) => x !== e);
+      }));
+    });
+    root.querySelector("button.dscancel")?.addEventListener("click", () => this._dsCancel());
+    root.querySelector("button.dssave")?.addEventListener("click", () => this._dsSave());
+    root.querySelector("button.dsaskdelete")?.addEventListener("click", () => { d.confirmDelete = true; this._render(); });
+    root.querySelector("button.dsnodelete")?.addEventListener("click", () => { d.confirmDelete = false; this._render(); });
+    root.querySelector("button.dsdodelete")?.addEventListener("click", () => this._dsDelete());
   }
 
   _editorHtml() {
@@ -732,6 +1076,7 @@ class SbSchedulerCard extends HTMLElement {
 
   _wire() {
     const root = this.shadowRoot;
+    this._wireDaySets(root);
     root.querySelectorAll("button.edit").forEach((b) =>
       b.addEventListener("click", () => this._beginEdit(b.dataset.id)));
     root.querySelector("button.new")?.addEventListener("click", () => this._beginCreate());
@@ -1102,6 +1447,34 @@ option { background: var(--card-background-color); color: var(--primary-text-col
          padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; }
 .warn { color: var(--warning-color); font-size: .85em; margin: -6px 0 8px; }
 code { background: var(--secondary-background-color); padding: 1px 4px; border-radius: 3px; }
+/* --- day-sets --- */
+.sect-head { font-weight: 600; margin: 20px 0 4px; padding-top: 12px;
+             border-top: 1px solid var(--divider-color); }
+.dsrow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 0;
+         border-bottom: 1px solid var(--divider-color); }
+.dsrow:last-of-type { border-bottom: none; }
+.nocal { font-size: .75em; color: var(--secondary-text-color); margin-left: 8px;
+         border: 1px solid var(--divider-color); border-radius: 8px; padding: 0 6px; }
+.dstitle { font-weight: 600; font-size: 1.05em; margin: 4px 0 8px; }
+.dsec { border: 1px solid var(--divider-color); border-radius: 8px; margin: 10px 0; }
+.dsec > summary { cursor: pointer; padding: 8px 12px; font-weight: 500; list-style: none; }
+.dsec > summary::before { content: "\\25B6"; display: inline-block; font-size: .7em; margin-right: 8px;
+                          transition: transform .15s; color: var(--secondary-text-color); }
+.dsec[open] > summary::before { transform: rotate(90deg); }
+.dsecbody { padding: 0 12px 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-t { border: 1px solid var(--divider-color); border-radius: 12px; padding: 3px 10px;
+          font-size: .85em; cursor: pointer; user-select: none; }
+.chip-t input { display: none; }
+.chip-t.on { background: var(--primary-color); color: var(--text-primary-color); border-color: transparent; }
+.row-t { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+textarea { font: inherit; padding: 8px; border-radius: 6px; border: 1px solid var(--divider-color);
+           background: var(--card-background-color); color: var(--primary-text-color); resize: vertical; }
+.calpick { max-height: 180px; overflow: auto; border: 1px solid var(--divider-color);
+           border-radius: 6px; padding: 4px 8px; margin-top: 4px; }
+.calopt { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: .9em; cursor: pointer; }
+.calopt .calid { color: var(--secondary-text-color); font-size: .8em; margin-left: auto;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
 `;
 
 // --- config editor ---------------------------------------------------------

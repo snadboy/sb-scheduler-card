@@ -122,6 +122,39 @@ the OS locale. It shows AM/PM on this setup; on a 24-hour locale the editor's
 pickers would disagree with the rest of the card, and the only fix would be
 replacing them with custom controls.
 
+## Day-set editing in the card (v0.10.0)
+
+The card now creates, edits and deletes day-sets — "one visual place for every
+time-based rule" finally means one place. Read path: the roster sensor's
+`config` (the stored dict, verbatim) and `used_by`. Write path:
+`sb_scheduler.set_day_set` (no `id` = create, `id` = update) and
+`remove_day_set`. The backend validates with the SAME function the Configure
+form uses, so the card can only ever show the errors the form would.
+
+- **Errors arrive as `service_validation_error` over the WebSocket** with the
+  message text — that is what `hass.callService` rejects with, so
+  `err.message` is shown as-is. (HA's REST `/api/services` endpoint lets the
+  same exception escape as a 500 — irrelevant to the card, but it will fool a
+  curl-based test.)
+- **Delete is refused server-side while anything depends on the set**, and
+  the card knows in advance: `used_by` drives an "In use by …" note in place
+  of the Delete button. Never trust only the client-side check.
+- Sections are native `<details>`, open when they hold a value — same rule as
+  the Configure form. Weekdays and months are chip toggles, calendars are a
+  filterable checkbox list that EXCLUDES this integration's own calendar
+  entities (building on those is what "Built on" is for).
+- Dates are the one free-text field, by nature (ranges). A loose regex checks
+  the shape client-side; the server is the real validator.
+- **A save reloads the config entry**, so the roster sensor vanishes for a
+  couple of seconds and comes back — the list empties and refills. Tests must
+  wait ~10 s after a save before reading the roster.
+- **Test harness: poll until mounted.** A fixed wait after navigation raced
+  the dashboard and produced a false "card never mounted" — the module had
+  loaded, the view just had not rendered cards yet. Poll for a `.row` inside
+  the shadow root instead.
+- Editing a day-set from the card is `_dsOpen`/`_dsDraft`, parallel to the
+  schedule editor's `_open`/`_draft`; `set hass` returns early for both.
+
 ## Day-sets come from the roster sensor (v0.9.5)
 
 `_daySets()` reads `sensor.sb_scheduler_day_sets` — the entity carrying
