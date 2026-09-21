@@ -1,4 +1,4 @@
-/* SB Scheduler Card — v0.12.0
+/* SB Scheduler Card — v0.12.1
  *
  * A full editor for sb_scheduler schedules: create, delete, and edit name,
  * day-set, steps (add/remove), time patterns and ACTIONS.
@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.12.0";
+const VERSION = "0.12.1";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -152,6 +152,12 @@ const prettyDate = (iso) => {
   if (isNaN(d)) return iso;
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 };
+
+// A draft's "have you changed anything" fingerprint. UI-only fields are
+// dropped so that typing in a filter box or opening a confirm does not count
+// as unsaved work.
+const VOLATILE = new Set(["error", "confirmDelete", "confirmDiscard", "calFilter", "usedBy", "filter"]);
+const snapshot = (d) => JSON.stringify(d, (k, v) => (VOLATILE.has(k) ? undefined : v));
 
 const blankStep = () => ({
   step_id: null,           // no id — the backend allocates a fresh one
@@ -367,7 +373,9 @@ class SbSchedulerCard extends HTMLElement {
         };
       }),
       error: null,
+      confirmDiscard: false,
     };
+    this._snap = snapshot(this._draft);
     this._render();
   }
 
@@ -382,14 +390,28 @@ class SbSchedulerCard extends HTMLElement {
       day_set: daySets.some((d) => d.id === "daily") ? "daily" : (daySets[0]?.id || "daily"),
       steps: [{ ...blankStep(), name: "Run" }],
       error: null,
+      confirmDiscard: false,
     };
+    this._snap = snapshot(this._draft);
     this._render();
   }
 
+  /** Close for real. Only Save and a confirmed Discard call this directly. */
   _cancel() {
     this._open = null;
     this._draft = null;
     this._sig = null;
+    this._render();
+  }
+
+  /** Cancel / ✕ / Escape all come here: close at once if nothing changed,
+   *  otherwise ask. Clicking the backdrop is deliberately NOT a way out —
+   *  an editor with a Save button must not vanish because focus wandered. */
+  _requestCancel() {
+    const d = this._draft;
+    if (!d) return;
+    if (snapshot(d) === this._snap) { this._cancel(); return; }
+    d.confirmDiscard = true;
     this._render();
   }
 
@@ -503,6 +525,9 @@ class SbSchedulerCard extends HTMLElement {
   // --- rendering ----------------------------------------------------------
   _render() {
     if (!this.shadowRoot) return;
+    // The window-level scroll lock belongs to the dialog that is about to be
+    // torn down; re-installed by _wire() if a dialog is rendered again.
+    this._removeScrollLock();
     if (!this._hass) {
       this.shadowRoot.innerHTML = "";
       return;
@@ -525,6 +550,42 @@ class SbSchedulerCard extends HTMLElement {
   _scDialogHtml() {
     if (!this._open) return "";
     return `<dialog class="scdialog"><div class="dsdialog-body">${this._editorHtml()}</div></dialog>`;
+  }
+
+  /** showModal() makes the page inert to clicks, but wheel and touch still
+   *  scroll HA's dashboard behind the dialog. Measured in Chrome: a wheel
+   *  over the backdrop DOES target the <dialog>, yet a non-passive wheel
+   *  listener on the dialog element did not stop the page scrolling. A
+   *  capturing listener on window does. So, for as long as a dialog is up:
+   *  anything outside the dialog body is swallowed, and inside the body a
+   *  wheel is swallowed whenever the body cannot scroll further that way —
+   *  nothing ever chains to the page. Touch inside the body is left to
+   *  overscroll-behavior: contain, or the body itself could not be scrolled. */
+  _guardScroll(dlg) {
+    this._removeScrollLock();
+    const body = dlg.querySelector(".dsdialog-body");
+    const handler = (e) => {
+      if (!e.composedPath().includes(body)) { e.preventDefault(); return; }
+      if (e.type !== "wheel") return;
+      const canScroll = body.scrollHeight > body.clientHeight + 1;
+      const atTop = body.scrollTop <= 0;
+      const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 1;
+      if (!canScroll || (e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom)) e.preventDefault();
+    };
+    window.addEventListener("wheel", handler, { capture: true, passive: false });
+    window.addEventListener("touchmove", handler, { capture: true, passive: false });
+    this._scrollLock = () => {
+      window.removeEventListener("wheel", handler, { capture: true });
+      window.removeEventListener("touchmove", handler, { capture: true });
+    };
+  }
+
+  _removeScrollLock() {
+    if (this._scrollLock) { this._scrollLock(); this._scrollLock = null; }
+  }
+
+  disconnectedCallback() {
+    this._removeScrollLock();
   }
 
   _dsDialogHtml() {
@@ -667,7 +728,7 @@ class SbSchedulerCard extends HTMLElement {
     const c = d.config || {};
     this._dsOpen = id;
     this._dsDraft = {
-      creating: false, confirmDelete: false, error: null,
+      creating: false, confirmDelete: false, confirmDiscard: null, error: null,
       usedBy: d.used_by || { schedules: [], day_sets: [] },
       name: c.name || d.name || "",
       weekdays: [...(c.weekdays || [])],
@@ -690,13 +751,14 @@ class SbSchedulerCard extends HTMLElement {
       expose_calendar: c.expose_calendar !== false,
       calFilter: "",
     };
+    this._dsSnap = snapshot(this._dsDraft);
     this._render();
   }
 
   _beginDsCreate() {
     this._dsOpen = "__new__";
     this._dsDraft = {
-      creating: true, confirmDelete: false, error: null,
+      creating: true, confirmDelete: false, confirmDiscard: null, error: null,
       usedBy: { schedules: [], day_sets: [] },
       name: "", weekdays: [], base_day_set: "", base_calendars: [], base_dates: "",
       exclude_calendars: [], exclude_dates: "", exclude_match: "",
@@ -704,13 +766,28 @@ class SbSchedulerCard extends HTMLElement {
       pick: "none", pick_every: 2, pick_anchor: "", pick_nth: "1", months: [],
       invert: false, offset_days: 0, expose_calendar: false, calFilter: "",
     };
+    this._dsSnap = snapshot(this._dsDraft);
     this._render();
   }
 
+  /** Back to the list, for real. Save and a confirmed Discard call this. */
   _dsCancel() {
     this._dsOpen = null;
     this._dsDraft = null;
     this._sig = null;
+    this._render();
+  }
+
+  /** Cancel (→ list), ✕ / Escape (→ close) from the day-set editor: immediate
+   *  when nothing changed, otherwise ask and remember where to go. */
+  _dsRequestCancel(intent) {
+    const d = this._dsDraft;
+    if (!d) return;
+    if (snapshot(d) === this._dsSnap) {
+      if (intent === "close") this._dsClose(); else this._dsCancel();
+      return;
+    }
+    d.confirmDiscard = intent;
     this._render();
   }
 
@@ -842,6 +919,11 @@ class SbSchedulerCard extends HTMLElement {
     return `
       <div class="dshead"><span class="dstitle">${d.creating ? "New day-set" : "Edit day-set"}</span>
         <button class="dsclose" title="Close">✕</button></div>
+      ${d.confirmDiscard ? `
+        <div class="confirm discard">Discard unsaved changes?
+          <div class="buttons"><button class="dskeepediting">Keep editing</button>
+            <button class="dsdiscard danger">Discard</button></div>
+        </div>` : ""}
       ${d.error ? `<div class="error">${esc(d.error)}</div>` : ""}
       <label class="field"><span>Name</span><input id="ds_name" type="text" value="${esc(d.name)}"></label>
       ${sec("Sources — where the dates come from", sources, true)}
@@ -870,12 +952,25 @@ class SbSchedulerCard extends HTMLElement {
     });
     const dlg = root.querySelector("dialog.dsdialog");
     if (dlg) {
-      // Escape fires 'cancel' then 'close'; the ✕ buttons and a click on the
-      // backdrop (the dialog element itself, outside its body) close too.
-      dlg.addEventListener("close", () => { if (this._dsDialog) this._dsClose(); });
-      dlg.addEventListener("click", (e) => { if (e.target === dlg) this._dsClose(); });
+      this._guardScroll(dlg);
+      // Escape closes the native dialog. From the list that is final; from
+      // the editor it goes through the dirty check, and a re-render brings the
+      // dialog back with the prompt if there is unsaved work. A backdrop
+      // click does nothing on purpose.
+      dlg.addEventListener("close", () => {
+        if (!this._dsDialog) return;
+        if (this._dsOpen) this._dsRequestCancel("close"); else this._dsClose();
+      });
       root.querySelectorAll("button.dsclose").forEach((b) =>
-        b.addEventListener("click", () => this._dsClose()));
+        b.addEventListener("click", () =>
+          this._dsOpen ? this._dsRequestCancel("close") : this._dsClose()));
+      root.querySelector("button.dskeepediting")?.addEventListener("click", () => {
+        this._dsDraft.confirmDiscard = null; this._render();
+      });
+      root.querySelector("button.dsdiscard")?.addEventListener("click", () => {
+        const intent = this._dsDraft?.confirmDiscard;
+        if (intent === "close") this._dsClose(); else this._dsCancel();
+      });
     }
     root.querySelectorAll("button.dsedit").forEach((b) =>
       b.addEventListener("click", () => this._beginDsEdit(b.dataset.id)));
@@ -926,7 +1021,7 @@ class SbSchedulerCard extends HTMLElement {
         d[f] = box.checked ? [...new Set([...d[f], e])] : d[f].filter((x) => x !== e);
       }));
     });
-    root.querySelector("button.dscancel")?.addEventListener("click", () => this._dsCancel());
+    root.querySelector("button.dscancel")?.addEventListener("click", () => this._dsRequestCancel("list"));
     root.querySelector("button.dssave")?.addEventListener("click", () => this._dsSave());
     root.querySelector("button.dsaskdelete")?.addEventListener("click", () => { d.confirmDelete = true; this._render(); });
     root.querySelector("button.dsnodelete")?.addEventListener("click", () => { d.confirmDelete = false; this._render(); });
@@ -940,6 +1035,11 @@ class SbSchedulerCard extends HTMLElement {
     return `
       <div class="dshead"><span class="dstitle">${d.creating ? "New schedule" : "Edit schedule"}</span>
         <button class="scclose" title="Close">✕</button></div>
+      ${d.confirmDiscard ? `
+        <div class="confirm discard">Discard unsaved changes?
+          <div class="buttons"><button class="keepediting">Keep editing</button>
+            <button class="discard danger">Discard</button></div>
+        </div>` : ""}
       ${d.error ? `<div class="error">${esc(d.error)}</div>` : ""}
       <label class="field"><span>Name</span>
         <input id="name" type="text" value="${esc(d.name)}"
@@ -1129,10 +1229,16 @@ class SbSchedulerCard extends HTMLElement {
     this._wireDaySets(root);
     const sc = root.querySelector("dialog.scdialog");
     if (sc) {
-      sc.addEventListener("close", () => { if (this._open) this._cancel(); });
-      sc.addEventListener("click", (e) => { if (e.target === sc) this._cancel(); });
+      this._guardScroll(sc);
+      // Escape closes the native dialog; if there is unsaved work the
+      // re-render brings it straight back with the discard prompt showing.
+      sc.addEventListener("close", () => { if (this._open) this._requestCancel(); });
       root.querySelectorAll("button.scclose").forEach((b) =>
-        b.addEventListener("click", () => this._cancel()));
+        b.addEventListener("click", () => this._requestCancel()));
+      root.querySelector("button.keepediting")?.addEventListener("click", () => {
+        this._draft.confirmDiscard = false; this._render();
+      });
+      root.querySelector("button.discard")?.addEventListener("click", () => this._cancel());
     }
     root.querySelectorAll("button.edit").forEach((b) =>
       b.addEventListener("click", () => this._beginEdit(b.dataset.id)));
@@ -1367,7 +1473,7 @@ class SbSchedulerCard extends HTMLElement {
       }));
 
     // --- buttons
-    root.querySelector("button.cancel")?.addEventListener("click", () => this._cancel());
+    root.querySelector("button.cancel")?.addEventListener("click", () => this._requestCancel());
     root.querySelector("button.save")?.addEventListener("click", () => this._save());
     root.querySelector("button.askdelete")?.addEventListener("click", () => {
       d.confirmDelete = true;
@@ -1516,7 +1622,12 @@ dialog.dsdialog::backdrop, dialog.scdialog::backdrop { background: rgba(0,0,0,.4
 button.scclose { border: none; background: none; font-size: 1.1em; padding: 4px 8px;
                  color: var(--secondary-text-color); }
 button.scclose:hover { color: var(--primary-text-color); }
-.dsdialog-body { padding: 12px 20px 20px; max-height: 90vh; overflow: auto; box-sizing: border-box; }
+/* overscroll-behavior: contain keeps the body's own scrolling from chaining
+   to the dashboard behind the dialog once it reaches its top or bottom. */
+.dsdialog-body { padding: 12px 20px 20px; max-height: 90vh; overflow: auto;
+                 box-sizing: border-box; overscroll-behavior: contain; }
+dialog.dsdialog, dialog.scdialog { overscroll-behavior: contain; }
+.confirm.discard { border-color: var(--warning-color, #ff9800); margin: 0 0 12px; }
 .dshead { display: flex; align-items: center; justify-content: space-between;
           margin: 4px 0 8px; }
 .dshead .dstitle { margin: 0; }

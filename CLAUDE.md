@@ -122,6 +122,37 @@ the OS locale. It shows AM/PM on this setup; on a 24-hour locale the editor's
 pickers would disagree with the rest of the card, and the only fix would be
 replacing them with custom controls.
 
+## What a native <dialog> does NOT give you (v0.12.1)
+
+Two defects shipped in v0.11/0.12 because I assumed `showModal()` did more
+than it does. User: "they don't appear modal — the mouse wheel scrolls the
+background", and "clicking outside dismisses them and loses entered work".
+
+- **`showModal()` makes the page inert to clicks only.** Wheel and touch
+  over the backdrop still scroll HA's dashboard. Measured: the wheel event
+  *does* target the `<dialog>` element, yet a non-passive `wheel` listener on
+  the dialog did not stop the page scrolling (cause not established — do not
+  guess). A **capturing listener on `window`** does: while a dialog is up,
+  swallow anything whose `composedPath()` does not include `.dsdialog-body`,
+  and inside the body swallow a wheel whenever the body cannot scroll further
+  that way. Installed by `_guardScroll()`, removed at the top of every
+  `_render()` and in `disconnectedCallback()`. Verified: card position
+  unchanged through 1,200 px of wheel over the backdrop and 6,000 px past the
+  body's top and bottom.
+- **A backdrop click must NOT close an editor.** It was wired that way in
+  v0.11 — exactly the accidental-loss path. Removed for both dialogs; the
+  day-set LIST (no draft) ignores it too, for consistency.
+- **Cancel / ✕ / Escape go through a dirty check.** `snapshot(draft)` (JSON
+  minus UI-only keys: error, confirms, filters, usedBy) is taken at open;
+  identical → close at once, otherwise an inline "Discard unsaved changes?"
+  with Keep editing / Discard. **Escape is handled on the dialog's `close`
+  event, not `cancel`:** the native dialog closes, and if the draft is dirty
+  the re-render recreates the dialog with the prompt — so it works even when
+  the browser force-closes (Chrome ignores `preventDefault` on repeated
+  `cancel` without user activation). Typed values survive the round trip.
+- Day-set editor remembers the INTENT (`confirmDiscard: "list" | "close"`)
+  so Discard after Cancel returns to the list, after ✕/Escape closes.
+
 ## Both editors are dialogs; the card body is ALWAYS the list (v0.12.0)
 
 The schedule editor got the same treatment as day-sets: `_scDialogHtml()`
