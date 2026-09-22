@@ -1,4 +1,4 @@
-/* SB Scheduler Card — v0.13.0
+/* SB Scheduler Card — v0.13.1
  *
  * A full editor for sb_scheduler schedules: create, delete, and edit name,
  * day-set, steps (add/remove), time patterns and ACTIONS.
@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.13.0";
+const VERSION = "0.13.1";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -881,16 +881,16 @@ class SbSchedulerCard extends HTMLElement {
         ${this._calPickerHtml("exclude_calendars", d.exclude_calendars, d.calFilter)}</div>
       <label class="field"><span>…and these dates</span>
         <textarea id="ds_exclude_dates" rows="2" placeholder="2026-12-25, 2027-06-05..2027-08-17">${esc(d.exclude_dates)}</textarea></label>
-      <label class="field"><span>Only cancel when the entry matches</span>
-        <input id="ds_exclude_match" type="text" value="${esc(d.exclude_match)}"></label>`;
+      <label class="field"><span>Only cancel when the entry matches <span class="hint">— a word for all, or per calendar: calendar.anderson: #do</span></span>
+        <textarea id="ds_exclude_match" rows="2" placeholder="calendar.anderson: #do">${esc(d.exclude_match)}</textarea></label>`;
 
     const always = `
       <div class="field"><span>Always included by these calendars</span>
         ${this._calPickerHtml("force_calendars", d.force_calendars, d.calFilter)}</div>
       <label class="field"><span>…and these dates</span>
         <textarea id="ds_force_dates" rows="2" placeholder="2026-12-25, 2027-06-05..2027-08-17">${esc(d.force_dates)}</textarea></label>
-      <label class="field"><span>Only force when the entry matches</span>
-        <input id="ds_force_match" type="text" value="${esc(d.force_match)}"></label>`;
+      <label class="field"><span>Only force when the entry matches <span class="hint">— a word for all, or per calendar: calendar.anderson: #wd</span></span>
+        <textarea id="ds_force_match" rows="2" placeholder="Workday">${esc(d.force_match)}</textarea></label>`;
 
     const pick = `
       <label class="field"><span>Pick</span>
