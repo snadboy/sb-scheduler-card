@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.13.1";
+const VERSION = "0.14.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -156,7 +156,7 @@ const prettyDate = (iso) => {
 // A draft's "have you changed anything" fingerprint. UI-only fields are
 // dropped so that typing in a filter box or opening a confirm does not count
 // as unsaved work.
-const VOLATILE = new Set(["error", "confirmDelete", "confirmDiscard", "calFilter", "usedBy", "filter"]);
+const VOLATILE = new Set(["error", "confirmDelete", "confirmDiscard", "calFilter", "usedBy", "filter", "holidayNames", "holidaysBusy"]);
 const snapshot = (d) => JSON.stringify(d, (k, v) => (VOLATILE.has(k) ? undefined : v));
 
 const blankStep = () => ({
@@ -609,7 +609,8 @@ class SbSchedulerCard extends HTMLElement {
     const rows = this._schedules();
     const add = `<div class="addrow">
       <button class="new">+ New schedule</button>
-      <button class="dsopen" title="Create and edit the day-sets schedules run on">Day-sets…</button>
+      <button class="dsopen" title="Create and edit the day types schedules run on">Day types…</button>
+      <button class="refreshnow" title="Recompute every day type now (source calendars are otherwise re-read every 15 minutes)">↻</button>
     </div>`;
     if (!rows.length) {
       return `<div class="empty">No schedules yet.</div>${add}`;
@@ -664,7 +665,7 @@ class SbSchedulerCard extends HTMLElement {
                 <span></span>
               </label>
               <button class="run" data-entity="${esc(s.entity_id)}" data-step="${esc(step.step_id)}"
-                      title="Run this step's actions now, ignoring the day-set">Run now</button>
+                      title="Run this step's actions now, ignoring the day type">Run now</button>
             </div>
           </div>`;
         }).join("")}</div>`}
@@ -689,9 +690,14 @@ class SbSchedulerCard extends HTMLElement {
       const b = this._roster().find((x) => x.id === c.base_day_set);
       out.push(`on ${b ? b.name : c.base_day_set}`);
     }
+    if (c.holidays_country) out.push(`${c.holidays_country}${c.holidays_subdiv ? "/" + c.holidays_subdiv : ""} holidays`);
     const cals = (c.base_calendars || c.include_calendars || []).length;
     if (cals) out.push(`${cals} calendar${cals > 1 ? "s" : ""}`);
     if (c.base_dates || c.include_dates) out.push("dates");
+    for (const id of c.exclude_day_sets || []) {
+      const o = this._roster().find((x) => x.id === id);
+      out.push(`minus ${o ? o.name : id}`);
+    }
     if ((c.exclude_calendars || []).length || c.exclude_dates) out.push("minus cancellations");
     if (d.pick) out.push(d.pick);
     if (d.months) out.push(d.months.map((m) => MONTHS[m - 1]).join("/"));
@@ -702,10 +708,10 @@ class SbSchedulerCard extends HTMLElement {
 
   _dsListHtml() {
     const rows = this._roster();
-    return `<div class="dshead"><span class="dstitle">Day-sets</span>
+    return `<div class="dshead"><span class="dstitle">Day types</span>
         <button class="dsclose" title="Close">✕</button></div>
-      <div class="hint">Named groups of dates that schedules run on. Build one from weekdays, calendars, typed dates or another day-set, then narrow it to a cadence or an ordinal.</div>
-      ${rows.length ? "" : `<div class="empty">No day-sets yet.</div>`}
+      <div class="hint">A day type is a rule about which dates count — Workday, Holiday, Day Off. Build one from weekdays, holidays, calendars, typed dates or another day type; subtract other day types; then narrow it to a cadence or an ordinal. Calendars are where dates come from — or, if you turn it on, where a day type is shown.</div>
+      ${rows.length ? "" : `<div class="empty">No day types yet.</div>`}
       ${rows.map((d) => {
         const inUse = (d.used_by?.schedules?.length || 0) + (d.used_by?.day_sets?.length || 0);
         return `<div class="dsrow">
@@ -721,7 +727,7 @@ class SbSchedulerCard extends HTMLElement {
           </div>
         </div>`;
       }).join("")}
-      <div class="addrow"><button class="dsnew">+ New day-set</button></div>`;
+      <div class="addrow"><button class="dsnew">+ New day type</button></div>`;
   }
 
   _beginDsEdit(id) {
@@ -737,6 +743,12 @@ class SbSchedulerCard extends HTMLElement {
       base_day_set: c.base_day_set || "",
       base_calendars: [...(c.base_calendars || c.include_calendars || [])],
       base_dates: c.base_dates || c.include_dates || "",
+      holidays_country: c.holidays_country || "",
+      holidays_subdiv: c.holidays_subdiv || "",
+      holidays_observed: c.holidays_observed !== false,
+      holidays_remove: [...(c.holidays_remove || [])],
+      holidayNames: null, holidaysBusy: false,
+      exclude_day_sets: [...(c.exclude_day_sets || [])],
       exclude_calendars: [...(c.exclude_calendars || [])],
       exclude_dates: c.exclude_dates || "",
       exclude_match: c.exclude_match || "",
@@ -755,6 +767,7 @@ class SbSchedulerCard extends HTMLElement {
     };
     this._dsSnap = snapshot(this._dsDraft);
     this._render();
+    if (this._dsDraft.holidays_country) this._dsLoadHolidayNames();
   }
 
   _beginDsCreate() {
@@ -763,7 +776,9 @@ class SbSchedulerCard extends HTMLElement {
       creating: true, confirmDelete: false, confirmDiscard: null, error: null,
       usedBy: { schedules: [], day_sets: [] },
       name: "", weekdays: [], base_day_set: "", base_calendars: [], base_dates: "",
-      exclude_calendars: [], exclude_dates: "", exclude_match: "",
+      holidays_country: "", holidays_subdiv: "", holidays_observed: true, holidays_remove: [],
+      holidayNames: null, holidaysBusy: false,
+      exclude_day_sets: [], exclude_calendars: [], exclude_dates: "", exclude_match: "",
       force_calendars: [], force_dates: "", force_match: "",
       pick: "none", pick_every: 2, pick_anchor: "", pick_nth: "1", months: [],
       invert: false, offset_days: 0, expose_calendar: false, calFilter: "",
@@ -795,7 +810,8 @@ class SbSchedulerCard extends HTMLElement {
 
   _dsValidate(d) {
     const datesOk = (s) => /^\s*(\d{4}-\d{2}-\d{2}(\s*\.\.\s*\d{4}-\d{2}-\d{2})?\s*(,|\n|$)\s*)*$/.test(s || "");
-    if (!d.name.trim()) return "A day-set needs a name.";
+    if (!d.name.trim()) return "A day type needs a name.";
+    if (d.holidays_country && !/^[A-Za-z]{2}$/.test(d.holidays_country.trim())) return "Holidays: the country is a two-letter ISO code, e.g. US.";
     for (const [k, label] of [["base_dates", "Dates"], ["exclude_dates", "Cancelled dates"], ["force_dates", "Always dates"]]) {
       if (!datesOk(d[k])) return `${label}: use YYYY-MM-DD, commas between, ranges as YYYY-MM-DD..YYYY-MM-DD.`;
     }
@@ -812,6 +828,10 @@ class SbSchedulerCard extends HTMLElement {
       name: d.name.trim(),
       weekdays: d.weekdays, base_day_set: d.base_day_set,
       base_calendars: d.base_calendars, base_dates: d.base_dates.trim(),
+      holidays_country: d.holidays_country.trim().toUpperCase(),
+      holidays_subdiv: d.holidays_subdiv.trim().toUpperCase(),
+      holidays_observed: d.holidays_observed, holidays_remove: d.holidays_remove,
+      exclude_day_sets: d.exclude_day_sets,
       exclude_calendars: d.exclude_calendars, exclude_dates: d.exclude_dates.trim(),
       exclude_match: d.exclude_match.trim(),
       force_calendars: d.force_calendars, force_dates: d.force_dates.trim(),
@@ -841,6 +861,29 @@ class SbSchedulerCard extends HTMLElement {
     }
   }
 
+  /** The holiday names for the draft's country, from sb_scheduler.list_holidays
+   *  (a service with a response), so "which of these do you still work?" is a
+   *  row of chips rather than a name that has to be typed exactly. */
+  async _dsLoadHolidayNames() {
+    const d = this._dsDraft;
+    if (!d) return;
+    const country = d.holidays_country.trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(country)) { d.holidayNames = null; this._render(); return; }
+    d.holidaysBusy = true; d.holidayNames = null; this._render();
+    try {
+      const r = await this._hass.callService("sb_scheduler", "list_holidays",
+        { country, subdiv: d.holidays_subdiv.trim().toUpperCase() }, undefined, false, true);
+      if (this._dsDraft !== d) return;              // editor closed meanwhile
+      d.holidayNames = r?.response?.names || [];
+    } catch (err) {
+      if (this._dsDraft !== d) return;
+      d.holidayNames = [];
+      d.error = `Holidays: ${err?.message || err}`;
+    }
+    d.holidaysBusy = false;
+    this._render();
+  }
+
   _calPickerHtml(field, chosen, filter) {
     const q = String(filter || "").toLowerCase();
     const opts = this._calendarOptions().filter((c) =>
@@ -857,7 +900,7 @@ class SbSchedulerCard extends HTMLElement {
     const d = this._dsDraft;
     const others = this._roster().filter((x) => x.id !== this._dsOpen);
     const inUse = [...(d.usedBy.schedules || []).map((s) => `schedule “${s}”`),
-                   ...(d.usedBy.day_sets || []).map((s) => `day-set “${s}”`)];
+                   ...(d.usedBy.day_sets || []).map((s) => `day type “${s}”`)];
     const open = (has) => (has ? "open" : "");
     const sec = (title, body, has, extra = "") =>
       `<details class="dsec" ${open(has)}><summary>${title}${extra}</summary><div class="dsecbody">${body}</div></details>`;
@@ -866,7 +909,7 @@ class SbSchedulerCard extends HTMLElement {
       <div class="field"><span>Weekdays</span>
         <div class="chips">${WEEKDAYS.map((w) => `<label class="chip-t ${d.weekdays.includes(w) ? "on" : ""}">
           <input type="checkbox" class="wd" value="${w}" ${d.weekdays.includes(w) ? "checked" : ""}>${w[0].toUpperCase() + w.slice(1)}</label>`).join("")}</div></div>
-      <label class="field"><span>Built on another day-set</span>
+      <label class="field"><span>Built on another day type</span>
         <select id="ds_base"><option value="" ${d.base_day_set ? "" : "selected"}>—</option>
           ${others.map((o) => `<option value="${esc(o.id)}" ${o.id === d.base_day_set ? "selected" : ""}>${esc(o.name)}</option>`).join("")}
         </select></label>
@@ -874,14 +917,31 @@ class SbSchedulerCard extends HTMLElement {
         <input id="ds_calfilter" type="text" placeholder="Filter calendars…" value="${esc(d.calFilter)}">
         ${this._calPickerHtml("base_calendars", d.base_calendars, d.calFilter)}</div>
       <label class="field"><span>Dates</span>
-        <textarea id="ds_base_dates" rows="2" placeholder="2026-12-25, 2027-06-05..2027-08-17">${esc(d.base_dates)}</textarea></label>`;
+        <textarea id="ds_base_dates" rows="2" placeholder="2026-12-25, 2027-06-05..2027-08-17">${esc(d.base_dates)}</textarea></label>
+      <div class="field holidays"><span>Holidays <span class="hint">— computed here, no other integration needed</span></span>
+        <div class="pair">
+          <label class="field inline"><span>Country</span><input id="ds_hol_country" type="text" maxlength="2" placeholder="US" value="${esc(d.holidays_country)}"></label>
+          <label class="field inline"><span>State / region</span><input id="ds_hol_subdiv" type="text" maxlength="3" placeholder="optional" value="${esc(d.holidays_subdiv)}"></label>
+        </div>
+        ${d.holidays_country.trim() ? `
+        <label class="row-t"><input id="ds_hol_observed" type="checkbox" ${d.holidays_observed ? "checked" : ""}> Weekend holidays count on the observed weekday (Sat → Fri, Sun → Mon)</label>
+        <div class="field"><span>Holidays you still work <span class="hint">— ticked ones are ordinary days for you</span></span>
+          ${d.holidaysBusy ? `<div class="hint">Loading…</div>` : d.holidayNames === null ? "" : `
+          <div class="chips">${[...new Set([...d.holidayNames, ...d.holidays_remove])].sort().map((n) => `<label class="chip-t ${d.holidays_remove.includes(n) ? "on" : ""}">
+            <input type="checkbox" class="hol" value="${esc(n)}" ${d.holidays_remove.includes(n) ? "checked" : ""}>${esc(n)}</label>`).join("")}</div>`}
+        </div>` : ""}
+      </div>`;
 
     const cancelled = `
+      <div class="field"><span>Minus these day types <span class="hint">— their dates are removed</span></span>
+        <div class="chips">${others.map((o) => `<label class="chip-t ${d.exclude_day_sets.includes(o.id) ? "on" : ""}">
+          <input type="checkbox" class="minus" value="${esc(o.id)}" ${d.exclude_day_sets.includes(o.id) ? "checked" : ""}>${esc(o.name)}</label>`).join("")}
+          ${others.length ? "" : `<span class="hint">No other day types yet.</span>`}</div></div>
       <div class="field"><span>Cancelled by these calendars</span>
         ${this._calPickerHtml("exclude_calendars", d.exclude_calendars, d.calFilter)}</div>
       <label class="field"><span>…and these dates</span>
         <textarea id="ds_exclude_dates" rows="2" placeholder="2026-12-25, 2027-06-05..2027-08-17">${esc(d.exclude_dates)}</textarea></label>
-      <label class="field"><span>Only cancel when the entry matches <span class="hint">— a word for all, or per calendar: calendar.anderson: #do</span></span>
+      <label class="field"><span>Only cancel when the title has <span class="hint">— whole words in the event title; one for all, or per calendar: calendar.anderson: #do</span></span>
         <textarea id="ds_exclude_match" rows="2" placeholder="calendar.anderson: #do">${esc(d.exclude_match)}</textarea></label>`;
 
     const always = `
@@ -889,8 +949,8 @@ class SbSchedulerCard extends HTMLElement {
         ${this._calPickerHtml("force_calendars", d.force_calendars, d.calFilter)}</div>
       <label class="field"><span>…and these dates</span>
         <textarea id="ds_force_dates" rows="2" placeholder="2026-12-25, 2027-06-05..2027-08-17">${esc(d.force_dates)}</textarea></label>
-      <label class="field"><span>Only force when the entry matches <span class="hint">— a word for all, or per calendar: calendar.anderson: #wd</span></span>
-        <textarea id="ds_force_match" rows="2" placeholder="Workday">${esc(d.force_match)}</textarea></label>`;
+      <label class="field"><span>Only force when the title has <span class="hint">— same rules; per calendar: calendar.anderson: #wd</span></span>
+        <textarea id="ds_force_match" rows="2" placeholder="calendar.anderson: #wd">${esc(d.force_match)}</textarea></label>`;
 
     const pick = `
       <label class="field"><span>Pick</span>
@@ -914,12 +974,12 @@ class SbSchedulerCard extends HTMLElement {
           return `<label class="chip-t ${on ? "on" : ""}"><input type="checkbox" class="mo" value="${v}" ${on ? "checked" : ""}>${m}</label>`; }).join("")}</div></div>`;
 
     const advanced = `
-      <label class="row-t"><input id="ds_invert" type="checkbox" ${d.invert ? "checked" : ""}> Invert (every date NOT in this set)</label>
+      <label class="row-t"><input id="ds_invert" type="checkbox" ${d.invert ? "checked" : ""}> Invert (every date NOT in this day type)</label>
       <label class="field"><span>Shift by (days)</span><input id="ds_offset" type="number" min="-30" max="30" value="${esc(d.offset_days)}"></label>
-      <label class="row-t"><input id="ds_expose" type="checkbox" ${d.expose_calendar ? "checked" : ""}> Show as a calendar entity</label>`;
+      <label class="row-t"><input id="ds_expose" type="checkbox" ${d.expose_calendar ? "checked" : ""}> Show in the HA calendar panel (publishes a calendar entity)</label>`;
 
     return `
-      <div class="dshead"><span class="dstitle">${d.creating ? "New day-set" : "Edit day-set"}</span>
+      <div class="dshead"><span class="dstitle">${d.creating ? "New day type" : "Edit day type"}</span>
         <button class="dsclose" title="Close">✕</button></div>
       ${d.confirmDiscard ? `
         <div class="confirm discard">Discard unsaved changes?
@@ -929,18 +989,18 @@ class SbSchedulerCard extends HTMLElement {
       ${d.error ? `<div class="error">${esc(d.error)}</div>` : ""}
       <label class="field"><span>Name</span><input id="ds_name" type="text" value="${esc(d.name)}"></label>
       ${sec("Sources — where the dates come from", sources, true)}
-      ${sec("Cancelled — what takes a day back out", cancelled, d.exclude_calendars.length || d.exclude_dates)}
+      ${sec("Cancelled — what takes a day back out", cancelled, d.exclude_day_sets.length || d.exclude_calendars.length || d.exclude_dates)}
       ${sec("Always — what overrides a cancellation", always, d.force_calendars.length || d.force_dates)}
       ${sec("Pick — cadence, ordinal, months", pick, d.pick !== "none" || d.months.length)}
       ${sec("Advanced", advanced, d.invert || d.offset_days || !d.expose_calendar)}
       ${d.confirmDelete ? `
-        <div class="confirm">Delete this day-set?
+        <div class="confirm">Delete this day type?
           <div class="buttons"><button class="dsnodelete">Keep it</button><button class="dsdodelete danger">Delete</button></div>
         </div>` : `
         <div class="buttons">
           ${d.creating ? "" : inUse.length
             ? `<span class="hint">In use by ${esc(inUse.join(", "))} — change those to delete.</span>`
-            : `<button class="dsaskdelete danger-text">Delete day-set</button>`}
+            : `<button class="dsaskdelete danger-text">Delete day type</button>`}
           <span class="spacer"></span>
           <button class="dscancel">Cancel</button>
           <button class="dssave save">${d.creating ? "Create" : "Save"}</button>
@@ -951,6 +1011,11 @@ class SbSchedulerCard extends HTMLElement {
     root.querySelector("button.dsopen")?.addEventListener("click", () => {
       this._dsDialog = "list";
       this._render();
+    });
+    root.querySelector("button.refreshnow")?.addEventListener("click", async (e) => {
+      const b = e.currentTarget; b.disabled = true;
+      try { await this._hass.callService("sb_scheduler", "refresh", {}); }
+      finally { b.disabled = false; }
     });
     const dlg = root.querySelector("dialog.dsdialog");
     if (dlg) {
@@ -993,6 +1058,20 @@ class SbSchedulerCard extends HTMLElement {
     bind("ds_anchor", "pick_anchor");
     bind("ds_offset", "offset_days", Number);
     bind("ds_base", "base_day_set", (v) => v, "change");
+    bind("ds_hol_subdiv", "holidays_subdiv");
+    root.querySelector("#ds_hol_subdiv")?.addEventListener("change", () => this._dsLoadHolidayNames());
+    // Country: keep typing local; fetch the names (and show the block) on change.
+    root.querySelector("#ds_hol_country")?.addEventListener("input", (e) => { d.holidays_country = e.target.value; d.error = null; });
+    root.querySelector("#ds_hol_country")?.addEventListener("change", () => this._dsLoadHolidayNames());
+    root.querySelector("#ds_hol_observed")?.addEventListener("change", (e) => { d.holidays_observed = e.target.checked; });
+    root.querySelectorAll("input.hol").forEach((box) => box.addEventListener("change", () => {
+      d.holidays_remove = box.checked ? [...new Set([...d.holidays_remove, box.value])] : d.holidays_remove.filter((n) => n !== box.value);
+      box.closest("label").classList.toggle("on", box.checked);
+    }));
+    root.querySelectorAll("input.minus").forEach((box) => box.addEventListener("change", () => {
+      d.exclude_day_sets = box.checked ? [...new Set([...d.exclude_day_sets, box.value])] : d.exclude_day_sets.filter((x) => x !== box.value);
+      box.closest("label").classList.toggle("on", box.checked);
+    }));
     bind("ds_nth", "pick_nth", (v) => v, "change");
     root.querySelector("#ds_pick")?.addEventListener("change", (e) => { d.pick = e.target.value; d.error = null; this._render(); });
     root.querySelector("#ds_invert")?.addEventListener("change", (e) => { d.invert = e.target.checked; });
@@ -1053,8 +1132,8 @@ class SbSchedulerCard extends HTMLElement {
           ${known ? "" : `<option value="${esc(d.day_set)}" selected>${esc(d.day_set)} (missing)</option>`}
         </select></label>
       <label class="row-t negate"><input id="negate" type="checkbox" ${d.negate ? "checked" : ""}>
-        <span><b>Not</b> — run on every day that is <em>not</em> in this day-set</span></label>
-      ${known ? "" : `<div class="warn">This schedule points at a day-set that no longer exists, so it cannot run.</div>`}
+        <span><b>Not</b> — run on every day that is <em>not</em> in this day type</span></label>
+      ${known ? "" : `<div class="warn">This schedule points at a day type that no longer exists, so it cannot run.</div>`}
 
       ${d.steps.map((step, si) => this._stepHtml(step, si, d.steps.length)).join("")}
       <button class="addstep">+ Add a step</button>
@@ -1621,6 +1700,8 @@ option { background: var(--card-background-color); color: var(--primary-text-col
 code { background: var(--secondary-background-color); padding: 1px 4px; border-radius: 3px; }
 /* --- day-sets: a modal dialog, so the main card stays just schedules --- */
 .addrow { display: flex; gap: 8px; flex-wrap: wrap; }
+.addrow button.refreshnow { margin-left: auto; min-width: 2.4em; font-size: 1.1em; }
+.field.holidays .pair { margin-bottom: 6px; }
 dialog.dsdialog, dialog.scdialog {
                   border: none; border-radius: 12px; padding: 0;
                   width: min(720px, 95vw); max-height: 90vh;
@@ -1705,7 +1786,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: CARD,
   name: "SB Scheduler Card",
-  description: "Create and edit sb_scheduler schedules: day-sets, steps, times and actions.",
+  description: "Create and edit sb_scheduler schedules: day types, steps, times and actions.",
   preview: false,
   documentationURL: "https://github.com/snadboy/sb-scheduler",
 });

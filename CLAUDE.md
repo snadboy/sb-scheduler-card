@@ -122,6 +122,37 @@ the OS locale. It shows AM/PM on this setup; on a 24-hour locale the editor's
 pickers would disagree with the rest of the card, and the only fix would be
 replacing them with custom controls.
 
+## "Day types" in the UI, `day_set` in the code (v0.14.0)
+
+The user found "day-set vs calendar" confusing because *calendar* meant a
+source, a published entity and the HA panel at once. Decision 2026-09-22:
+every user-facing string says **day type** (button, dialog titles, hints,
+Runs-on, the Not toggle); code identifiers, service names, roster keys and
+CSS class names stay `ds*` / `day_set`. Do not rename the code side.
+
+Requires sb_scheduler ≥ 0.5.0 for the new fields:
+
+- **Holidays block** in Sources: country + region inputs, an *observed*
+  toggle, and **chips of holiday names** fetched from
+  `sb_scheduler.list_holidays` (a response service —
+  `callService(..., undefined, false, true)` returns `{response}`) on the
+  country's `change` event, not `input`, so typing stays local. A ticked chip
+  means "I still work this one" (`holidays_remove`). `holidayNames` /
+  `holidaysBusy` are VOLATILE so they never dirty the draft.
+- **Minus these day types** chips in Cancelled (`exclude_day_sets`); the
+  summary line reads "Mon Tue Wed Thu Fri · minus Workday".
+- **↻ in the header** calls `sb_scheduler.refresh`; disabled while in
+  flight.
+- Match-field labels say *title*, whole words — the backend semantics
+  changed in 0.5.0.
+- Expose toggle reads "Show in the HA calendar panel (publishes a calendar
+  entity)" — says what it does instead of naming the mechanism.
+
+Verified headless 2026-09-22 (`daytype_test.js` in the session scratchpad):
+Holiday chips load with the four ticked, Workday shows `[x] holiday` in
+minus and the Anderson rules in both match fields, a typed `ca` fetches
+Canada's names, `zz` shows the backend's validation error, no page errors.
+
 ## Match fields take per-calendar rules (v0.13.1)
 
 The day-set editor's `exclude_match` / `force_match` are `<textarea>`s, not

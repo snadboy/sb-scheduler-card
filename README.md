@@ -7,14 +7,14 @@ schedules — which days a schedule runs on, and what times within a day.
 
 ## What it does
 
-Lists every schedule with its day-set, times, last run and next run, and lets
-you edit the name, the day-set and the time pattern.
+Lists every schedule with its day type, times, last run and next run, and lets
+you edit the name, the day type and the time pattern.
 
 | Control | |
 |---|---|
 | **Toggle** | enable / disable the schedule |
-| **Run now** | fire its actions immediately, ignoring the day-set |
-| **Edit** | name, day-set and times |
+| **Run now** | fire its actions immediately, ignoring the day type |
+| **Edit** | name, day type and times |
 
 Times are never typed. A row is a **Time ↔ Sun** slider plus either a time
 picker, or an event dropdown (Sunrise / Sunset), a `+`/`−` dropdown and a
@@ -36,7 +36,7 @@ them out got a usable editor sooner. They may arrive later.
 
 The [`sb_scheduler`](https://github.com/snadboy/sb-scheduler) integration. The
 card needs no websocket API of its own: it reads schedules from their `switch`
-entities and day-sets from the `calendar` entities the integration publishes,
+entities and day types from the `calendar` entities the integration publishes,
 and writes through `sb_scheduler.edit_schedule`.
 
 ## Install
