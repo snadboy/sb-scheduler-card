@@ -122,6 +122,18 @@ the OS locale. It shows AM/PM on this setup; on a 24-hour locale the editor's
 pickers would disagree with the rest of the card, and the only fix would be
 replacing them with custom controls.
 
+## Match fields take per-calendar rules (v0.13.1)
+
+The day-set editor's `exclude_match` / `force_match` are `<textarea>`s, not
+single-line inputs, because sb_scheduler ≥ 0.4.1 reads `calendar.x: needle`
+lines as per-calendar rules (bare text = default for every calendar in the
+tier). The live Workday set uses `calendar.anderson: #do` so the user's
+Google calendar cancels a workday only on a tagged event while the local
+days_off calendar still cancels on any entry. Hint and placeholder show the
+form; the server (`parse_match_spec`) is the parser — the card passes the
+text through untouched. Verified headless 2026-09-21: both textareas render
+the stored rules, no page errors.
+
 ## What a native <dialog> does NOT give you (v0.12.1)
 
 Two defects shipped in v0.11/0.12 because I assumed `showModal()` did more
