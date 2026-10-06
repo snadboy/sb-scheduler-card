@@ -330,3 +330,13 @@ shadow root — the card's contents are not in the light DOM.
 
 **Test against a throwaway schedule, not a live one.** Several checks during
 development edited real schedules and had to be reverted.
+
+## v0.15.0 — Duplicate (2026-10-05)
+
+User: "SB Scheduler and Watch should both have a Duplicate button on their entries."
+Row button **Duplicate** → `_beginDuplicate(id)` = `_beginEdit(id, {copy: true})`: the
+editor in CREATE mode, title "Duplicate of “…”", name "… (copy)", every step WITHOUT a
+step_id (the backend allocates). Nothing exists until Create — a straight copy would fire
+the same actions at the same times as its source. Name prefill now from `schedule_name`
+(sb_scheduler 0.5.3), not friendly_name. Verified headless: a copy of Garden Lights,
+retargeted at a throwaway input_boolean, created with new ids s1/s2; deleted after.

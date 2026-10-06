@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.14.0";
+const VERSION = "0.15.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -347,22 +347,32 @@ class SbSchedulerCard extends HTMLElement {
   }
 
   // --- editing ------------------------------------------------------------
-  _beginEdit(scheduleId) {
+  /** Duplicate = the editor in CREATE mode, pre-filled from a schedule. Nothing
+   *  exists until Create, so a copy never fires alongside its source unasked. */
+  _beginDuplicate(scheduleId) {
+    this._beginEdit(scheduleId, { copy: true });
+  }
+
+  _beginEdit(scheduleId, opts = {}) {
     const s = this._schedules().find((x) => x.schedule_id === scheduleId);
     if (!s) return;
+    const copy = !!opts.copy;
     this._dsDialog = null;          // one dialog at a time
-    this._open = scheduleId;
+    this._open = copy ? "__new__" : scheduleId;
     this._draft = {
-      creating: false,
+      creating: copy,
+      copyOf: copy ? (s.friendly_name || scheduleId) : null,
       confirmDelete: false,
-      name: s.friendly_name || "",
+      // the schedule's own name (sb_scheduler ≥ 0.5.3): friendly_name carries HA's "SB "
+      // device prefix, and saving it back would double it
+      name: (s.schedule_name ?? s.friendly_name ?? "") + (copy ? " (copy)" : ""),
       day_set: s.day_set || "daily",
       negate: !!s.negate,
       steps: this._steps(s).map((step) => {
         const pattern = step.pattern || {};
         const occurrences = (pattern.occurrences || []).map(parseOccurrence);
         return {
-          step_id: step.step_id,
+          step_id: copy ? undefined : step.step_id,     // a copy's steps are new: the backend allocates their ids
           name: step.name || "",
           enabled: step.enabled !== false,
           type: pattern.type === "interval" ? "interval" : "occurrences",
@@ -647,6 +657,7 @@ class SbSchedulerCard extends HTMLElement {
               <span></span>
             </label>
             <button class="edit" data-id="${esc(s.schedule_id)}">Edit</button>
+            <button class="dup" data-id="${esc(s.schedule_id)}" title="Opens a copy to adjust — nothing is created until you press Create">Duplicate</button>
           </div>
         </div>
         ${shut ? "" : `<div class="steps">${steps.map((step) => {
@@ -1114,7 +1125,7 @@ class SbSchedulerCard extends HTMLElement {
     const daySets = this._daySets();
     const known = daySets.some((x) => x.id === d.day_set);
     return `
-      <div class="dshead"><span class="dstitle">${d.creating ? "New schedule" : "Edit schedule"}</span>
+      <div class="dshead"><span class="dstitle">${d.copyOf ? `Duplicate of “${esc(d.copyOf)}”` : d.creating ? "New schedule" : "Edit schedule"}</span>
         <button class="scclose" title="Close">✕</button></div>
       ${d.confirmDiscard ? `
         <div class="confirm discard">Discard unsaved changes?
@@ -1325,6 +1336,8 @@ class SbSchedulerCard extends HTMLElement {
     }
     root.querySelectorAll("button.edit").forEach((b) =>
       b.addEventListener("click", () => this._beginEdit(b.dataset.id)));
+    root.querySelectorAll("button.dup").forEach((b) =>
+      b.addEventListener("click", () => this._beginDuplicate(b.dataset.id)));
     root.querySelector("button.new")?.addEventListener("click", () => this._beginCreate());
 
     root.querySelectorAll("button.disclose").forEach((b) =>

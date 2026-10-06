@@ -15,6 +15,7 @@ you edit the name, the day type and the time pattern.
 | **Toggle** | enable / disable the schedule |
 | **Run now** | fire its actions immediately, ignoring the day type |
 | **Edit** | name, day type and times |
+| **Duplicate** | opens the editor on a copy ("… (copy)", same day type, steps and actions); nothing is created until **Create** — so a copy never fires alongside its source unasked |
 
 Times are never typed. A row is a **Time ↔ Sun** slider plus either a time
 picker, or an event dropdown (Sunrise / Sunset), a `+`/`−` dropdown and a
