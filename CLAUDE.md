@@ -340,3 +340,14 @@ step_id (the backend allocates). Nothing exists until Create — a straight copy
 the same actions at the same times as its source. Name prefill now from `schedule_name`
 (sb_scheduler 0.5.3), not friendly_name. Verified headless: a copy of Garden Lights,
 retargeted at a throwaway input_boolean, created with new ids s1/s2; deleted after.
+
+## v0.15.1 — an Entity action has a domain dropdown (2026-10-05)
+
+User duplicated Garden Lights and "could only choose a new light. entity". The entity
+list was filtered to the action's domain (from its service, `light.turn_on`); only
+TYPING in the filter box searched every domain, and nothing said so — true for Edit
+too. Now Entity mode shows a domain select (`_entityDomains()` = domains with entities
+AND services) beside the filter; changing it re-lists the entities, moves the service
+to that domain (`light.turn_on` → `switch.turn_on`) and clears an entity that no longer
+belongs. Filter placeholder: "Filter — searches every domain". Verified headless on a
+Garden Lights copy (light → switch: 177 switches, service switch.turn_on); never saved.

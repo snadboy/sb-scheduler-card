@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.15.0";
+const VERSION = "0.15.1";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -287,6 +287,12 @@ class SbSchedulerCard extends HTMLElement {
 
   _domains() {
     return Object.keys(this._hass?.services || {}).sort();
+  }
+  /** Domains an Entity action can target: they have entities AND services. */
+  _entityDomains() {
+    const svc = this._hass?.services || {};
+    const doms = new Set(Object.keys(this._hass?.states || {}).map((id) => id.split(".")[0]));
+    return [...doms].filter((d) => svc[d] && Object.keys(svc[d]).length).sort();
   }
 
   _servicesFor(domain) {
@@ -1250,8 +1256,14 @@ class SbSchedulerCard extends HTMLElement {
         </div>
 
         ${a.mode === "entity" ? `
+          <div class="pair">
+          <select class="act-domain" data-s="${si}" data-a="${ai}" title="The kind of entity — changing it re-lists the entities and moves the service to that domain">
+            ${this._entityDomains().map((v) => `<option value="${esc(v)}" ${v === a.domain ? "selected" : ""}>${esc(v)}</option>`).join("")}
+            ${this._entityDomains().includes(a.domain) ? "" : `<option value="${esc(a.domain)}" selected>${esc(a.domain)}</option>`}
+          </select>
           <input class="ent-filter" data-s="${si}" data-a="${ai}" type="text"
-                 placeholder="Filter entities…" value="${esc(a.filter)}">
+                 placeholder="Filter — searches every domain" value="${esc(a.filter)}">
+          </div>
           <select class="ent-pick" data-s="${si}" data-a="${ai}">
             ${a.entity_id ? "" : `<option value="" selected>Choose an entity…</option>`}
             ${entities.map((e) => `<option value="${esc(e.id)}" ${e.id === a.entity_id ? "selected" : ""}>${esc(e.name)} — ${esc(e.id)}</option>`).join("")}
@@ -1534,6 +1546,8 @@ class SbSchedulerCard extends HTMLElement {
         const svcs = this._servicesFor(a.domain);
         if (!svcs.includes(a.service)) a.service = svcs[0] || "";
         a.data = {};
+        // an Entity action's entity must belong to the new domain: pick again
+        if (a.mode === "entity" && a.entity_id && !a.entity_id.startsWith(a.domain + ".")) a.entity_id = "";
         d.error = null;
         this._render();
       }));
@@ -1690,6 +1704,8 @@ option { background: var(--card-background-color); color: var(--primary-text-col
 .arow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .pair { display: flex; gap: 6px; }
 .pair select { flex: 1; min-width: 0; }
+.action .pair .act-domain { flex: 0 1 34%; }
+.action .pair .ent-filter { flex: 1; min-width: 0; }
 .fieldrow { display: flex; align-items: center; gap: 8px; }
 .fkey { font-size: .85em; color: var(--secondary-text-color); flex: 0 0 96px;
         overflow: hidden; text-overflow: ellipsis; }
