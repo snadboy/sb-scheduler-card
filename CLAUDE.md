@@ -94,7 +94,7 @@ all three services (`create_schedule`, `edit_schedule`, `remove_schedule`).
   key already present in `service_data`, and only uses the service metadata to
   populate "+ Add a field". Rendering only documented fields would have made
   the bedside lamps' brightness invisible and then dropped it.
-- Field editors come from the selector: number/boolean/text. Anything else is
+- Field editors come from the selector — see v0.16.0 below. Anything else is
   preserved and shown read-only.
 - **Removing a step is draft-local**, so Cancel undoes it — no confirmation.
   Deleting a SCHEDULE is immediate, so that one has an inline confirm.
@@ -351,3 +351,35 @@ AND services) beside the filter; changing it re-lists the entities, moves the se
 to that domain (`light.turn_on` → `switch.turn_on`) and clears an entity that no longer
 belongs. Filter placeholder: "Filter — searches every domain". Verified headless on a
 Garden Lights copy (light → switch: 177 switches, service switch.turn_on); never saved.
+
+## v0.16.0 — fields edited by their selector (2026-10-14)
+
+User, on a `script.scriptfield` action: labels showed keys (`field_ent`) not Names,
+an `entity` field got a text box, and "how will field_ents (`entity` + `multiple`)
+be handled?" Answer before this release: as a STRING — a typed "a, b" reached the
+script as one string (a `for` loop iterates characters), and a stored list rendered
+read-only as opaque JSON.
+
+- **Label = the field's `name`**, key + description in the tooltip; "+ Add a field"
+  lists names too. Required fields carry a red `*` and no ✕.
+- **`fieldKind(meta, value)`** picks the editor from the SELECTOR first, then the
+  value: `entity` → filter + select (same in-place-repopulate pattern as the
+  action's own entity picker), `entity` + `multiple` → chips with ✕ plus an
+  "+ Add an entity…" select, saved as a real list. A stored string reads as
+  comma-separated and is only rewritten as a list when edited. The selector's
+  `domain` / `filter[].domain` restrict the picker (`selectorDomains`); an
+  unexpected value shape still falls through to `valueKind` → read-only.
+- **Required fields seed themselves** (`_seedRequired`) when a service is picked or
+  its domain changes, AND when an existing schedule opens — before the snapshot, so
+  open+cancel is not a change. `_validate` refuses a blank required field.
+- Per-field filter text lives in `action.ffilter` (VOLATILE; `serialiseAction`
+  never writes it).
+- Seeds: selector `default` if scalar, else number min / false / [] / "".
+
+Verified headless against the live card-lab (local file routed over the HACS URL,
+nothing saved): new schedule → Service only → script.scriptfield showed all four
+rows by Name with the right controls; blank save refused; filter, pick, add two
+entities, drop one → `field_ents: [one id]`. All 7 live schedules open with no
+validation error except the user's own "Script" test (its stored action lacks
+`field_ent`, which now shows as a blank required row). Bins Out's `data` still
+opaque, bedside `brightness` still a number.

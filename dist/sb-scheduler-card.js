@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.15.1";
+const VERSION = "0.16.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -93,6 +93,51 @@ const valueKind = (v) => {
   return "opaque";   // objects and arrays — e.g. notify's data: {tag, channel}
 };
 
+// The editor a FIELD gets: its selector first, then its value. An entity
+// selector (script fields, mostly) gets a picker rather than a text box, and
+// `multiple` keeps a real list — a typed "a, b" would reach the script as one
+// string. A value the picker could not hold still falls through to valueKind,
+// so an unexpected shape stays preserved read-only.
+const fieldKind = (meta, v) => {
+  const sel = meta?.selector || {};
+  if ("entity" in sel) {
+    const multiple = !!sel.entity?.multiple;
+    if (multiple && (v === undefined || typeof v === "string" ||
+        (Array.isArray(v) && v.every((x) => typeof x === "string")))) return "entities";
+    if (!multiple && (v === undefined || typeof v === "string")) return "entity";
+  }
+  return valueKind(v);
+};
+
+// A stored entity list. A string (from a service call, or a pre-0.16 save)
+// reads as comma-separated; it is only rewritten as a list when edited.
+const entityList = (v) => (Array.isArray(v) ? v
+  : String(v ?? "").split(",").map((x) => x.trim()).filter(Boolean));
+
+// Domains an entity selector allows; [] = any. A filter entry without a
+// domain allows every domain, so it lifts the restriction entirely.
+const selectorDomains = (ent) => {
+  const out = new Set([].concat(ent?.domain || []));
+  const filters = [].concat(ent?.filter || []);
+  if (filters.some((f) => !f?.domain)) return filters.length ? [] : [...out];
+  filters.forEach((f) => [].concat(f.domain).forEach((dm) => out.add(dm)));
+  return [...out];
+};
+
+// The starting value of a newly added field.
+const seedValue = (meta) => {
+  const s = meta?.selector || {};
+  const dflt = meta?.default;
+  if (["string", "number", "boolean"].includes(typeof dflt)) return dflt;
+  if ("number" in s) return s.number?.min ?? 0;
+  if ("boolean" in s) return false;
+  if ("entity" in s && s.entity?.multiple) return [];
+  return "";
+};
+
+const isBlank = (v) => v === undefined || v === null || v === "" ||
+  (Array.isArray(v) && !v.length);
+
 // "19:10" -> "7:10 PM". Every clock time the card renders goes through this.
 // It does NOT consult the browser locale: prettyTrigger used to and summarise
 // did not, so the same row could show "19:10" next to "07:10 PM".
@@ -156,7 +201,7 @@ const prettyDate = (iso) => {
 // A draft's "have you changed anything" fingerprint. UI-only fields are
 // dropped so that typing in a filter box or opening a confirm does not count
 // as unsaved work.
-const VOLATILE = new Set(["error", "confirmDelete", "confirmDiscard", "calFilter", "usedBy", "filter", "holidayNames", "holidaysBusy"]);
+const VOLATILE = new Set(["error", "confirmDelete", "confirmDiscard", "calFilter", "usedBy", "filter", "holidayNames", "holidaysBusy", "ffilter"]);
 const snapshot = (d) => JSON.stringify(d, (k, v) => (VOLATILE.has(k) ? undefined : v));
 
 const blankStep = () => ({
@@ -270,9 +315,10 @@ class SbSchedulerCard extends HTMLElement {
   _entityOptions(filter, domain, chosen) {
     const states = this._hass?.states || {};
     const q = String(filter || "").toLowerCase().trim();
+    const doms = [].concat(domain || []);
     const out = [];
     for (const id of Object.keys(states)) {
-      if (domain && !id.startsWith(domain + ".")) continue;
+      if (doms.length && !doms.some((dm) => id.startsWith(dm + "."))) continue;
       const name = states[id].attributes?.friendly_name || id;
       if (q && !id.toLowerCase().includes(q) && !String(name).toLowerCase().includes(q)) continue;
       out.push({ id, name });
@@ -319,6 +365,38 @@ class SbSchedulerCard extends HTMLElement {
 
   _fieldMeta(action, key) {
     return this._hass?.services?.[action.domain]?.[action.service]?.fields?.[key] || {};
+  }
+
+  /** Required fields this service documents, by key (entity_id is the
+   *  action's own entity, never a field row). */
+  _requiredFields(action) {
+    const fields = this._hass?.services?.[action.domain]?.[action.service]?.fields || {};
+    return Object.keys(fields).filter((k) => fields[k]?.required && k !== "entity_id");
+  }
+
+  /** Add the required fields a newly chosen service needs, so the editor
+   *  shows them without a trip through "+ Add a field". Never touches a key
+   *  that is already set. */
+  _seedRequired(action) {
+    for (const k of this._requiredFields(action)) {
+      if (!(k in action.data)) action.data[k] = seedValue(this._fieldMeta(action, k));
+    }
+  }
+
+  /** <option>s for an entity field's picker, honouring its filter box and
+   *  the selector's domains. A list field leaves out what it already holds. */
+  _fldEntOpts(action, key) {
+    const meta = this._fieldMeta(action, key);
+    const v = action.data[key];
+    const multiple = fieldKind(meta, v) === "entities";
+    const filter = action.ffilter?.[key] || "";
+    const doms = selectorDomains(meta.selector?.entity);
+    const chosen = multiple ? entityList(v) : [];
+    const opts = this._entityOptions(filter, doms, multiple ? "" : v)
+      .filter((e) => !chosen.includes(e.id));
+    const head = multiple ? `<option value="" selected>+ Add an entity…</option>`
+      : v ? "" : `<option value="" selected>Choose an entity…</option>`;
+    return head + opts.map((e) => `<option value="${esc(e.id)}" ${!multiple && e.id === v ? "selected" : ""}>${esc(e.name)} — ${esc(e.id)}</option>`).join("");
   }
 
   /** The full roster entries — config and dependents included — for editing. */
@@ -392,6 +470,10 @@ class SbSchedulerCard extends HTMLElement {
       error: null,
       confirmDiscard: false,
     };
+    // A required field the stored action lacks gets its (blank) row now, so
+    // it is visible rather than only discovered when Save refuses. Seeded
+    // before the snapshot: opening and cancelling is not a change.
+    this._draft.steps.forEach((step) => step.actions.forEach((a) => this._seedRequired(a)));
     this._snap = snapshot(this._draft);
     this._render();
   }
@@ -463,6 +545,11 @@ class SbSchedulerCard extends HTMLElement {
         if (!a.domain || !a.service) return `${where}every action needs a service.`;
         if (a.mode === "entity" && !a.entity_id) {
           return `${where}${a.domain}.${a.service} needs an entity.`;
+        }
+        for (const k of this._requiredFields(a)) {
+          if (isBlank(a.data[k])) {
+            return `${where}${a.domain}.${a.service}: "${this._fieldMeta(a, k).name || k}" is required.`;
+          }
         }
       }
     }
@@ -1288,33 +1375,49 @@ class SbSchedulerCard extends HTMLElement {
         ${spare.length ? `
           <select class="addfield" data-s="${si}" data-a="${ai}">
             <option value="" selected>+ Add a field…</option>
-            ${spare.map((k) => `<option value="${esc(k)}">${esc(k)}</option>`).join("")}
+            ${spare.map((k) => `<option value="${esc(k)}">${esc(this._fieldMeta(a, k).name || k)}</option>`).join("")}
           </select>` : ""}
       </div>`;
   }
 
   _fieldHtml(a, key, si, ai) {
     const v = a.data[key];
-    const kind = valueKind(v);
     const meta = this._fieldMeta(a, key);
+    const kind = fieldKind(meta, v);
     const num = meta?.selector?.number || {};
     const common = `data-s="${si}" data-a="${ai}" data-k="${esc(key)}"`;
-    // An opaque value (notify's data: {tag, channel}) is shown but NOT edited:
-    // rendering it as text and re-parsing is how a tag gets silently dropped.
-    const control = kind === "opaque"
-      ? `<span class="opaque" title="Edit this with the sb_scheduler.edit_schedule action">${esc(JSON.stringify(v))}</span>`
-      : kind === "boolean"
-        ? `<label class="toggle small"><input type="checkbox" class="fld-bool" ${common} ${v ? "checked" : ""}><span></span></label>`
-        : kind === "number"
-          ? `<input class="fld-num" ${common} type="number" value="${esc(v)}"
+    let control;
+    if (kind === "entity" || kind === "entities") {
+      const states = this._hass?.states || {};
+      const chips = kind === "entities"
+        ? `<div class="chips">${entityList(v).map((id, i) => `<span class="chip ent" title="${esc(id)}">${esc(states[id]?.attributes?.friendly_name || id)}<button class="fld-ents-drop" ${common} data-i="${i}" title="Remove ${esc(id)}">✕</button></span>`).join("")
+            || `<span class="hint">No entities yet</span>`}</div>`
+        : "";
+      control = `<div class="fldent">${chips}
+        <div class="pair">
+          <input class="fld-ent-filter" ${common} type="text" placeholder="Filter" value="${esc(a.ffilter?.[key] || "")}">
+          <select class="${kind === "entity" ? "fld-ent" : "fld-ents-add"}" ${common}>${this._fldEntOpts(a, key)}</select>
+        </div></div>`;
+    } else if (kind === "opaque") {
+      // An opaque value (notify's data: {tag, channel}) is shown but NOT edited:
+      // rendering it as text and re-parsing is how a tag gets silently dropped.
+      control = `<span class="opaque" title="Edit this with the sb_scheduler.edit_schedule action">${esc(JSON.stringify(v))}</span>`;
+    } else if (kind === "boolean") {
+      control = `<label class="toggle small"><input type="checkbox" class="fld-bool" ${common} ${v ? "checked" : ""}><span></span></label>`;
+    } else if (kind === "number") {
+      control = `<input class="fld-num" ${common} type="number" value="${esc(v)}"
                ${num.min !== undefined ? `min="${esc(num.min)}"` : ""}
                ${num.max !== undefined ? `max="${esc(num.max)}"` : ""}
-               ${num.step !== undefined ? `step="${esc(num.step)}"` : ""}>`
-          : `<input class="fld-text" ${common} type="text" value="${esc(v)}">`;
+               ${num.step !== undefined ? `step="${esc(num.step)}"` : ""}>`;
+    } else {
+      control = `<input class="fld-text" ${common} type="text" value="${esc(v)}">`;
+    }
+    // The label is the field's Name; its key and description are the tooltip.
+    const tip = key + (meta.description ? ` — ${meta.description}` : "");
     return `<div class="fieldrow">
-      <span class="fkey" title="${esc(meta.description || "")}">${esc(key)}</span>
+      <span class="fkey" title="${esc(tip)}">${esc(meta.name || key)}${meta.required ? `<span class="req">*</span>` : ""}</span>
       ${control}
-      ${kind === "opaque" ? "" : `<button class="dropfield" ${common} title="Remove">✕</button>`}
+      ${kind === "opaque" || meta.required ? "" : `<button class="dropfield" ${common} title="Remove">✕</button>`}
     </div>`;
   }
 
@@ -1534,6 +1637,7 @@ class SbSchedulerCard extends HTMLElement {
           const svcs = this._servicesFor(domain);
           if (!svcs.includes(a.service)) a.service = svcs[0] || "";
           a.data = {};
+          this._seedRequired(a);
         }
         d.error = null;
         this._render();
@@ -1546,6 +1650,7 @@ class SbSchedulerCard extends HTMLElement {
         const svcs = this._servicesFor(a.domain);
         if (!svcs.includes(a.service)) a.service = svcs[0] || "";
         a.data = {};
+        this._seedRequired(a);
         // an Entity action's entity must belong to the new domain: pick again
         if (a.mode === "entity" && a.entity_id && !a.entity_id.startsWith(a.domain + ".")) a.entity_id = "";
         d.error = null;
@@ -1554,7 +1659,9 @@ class SbSchedulerCard extends HTMLElement {
 
     root.querySelectorAll("select.act-service").forEach((sel) =>
       sel.addEventListener("change", () => {
-        actOf(sel).service = sel.value;
+        const a = actOf(sel);
+        a.service = sel.value;
+        this._seedRequired(a);
         d.error = null;
         this._render();
       }));
@@ -1563,10 +1670,7 @@ class SbSchedulerCard extends HTMLElement {
       sel.addEventListener("change", () => {
         if (!sel.value) return;
         const a = actOf(sel);
-        const meta = this._fieldMeta(a, sel.value);
-        const s = meta.selector || {};
-        a.data[sel.value] = "number" in s ? (s.number?.min ?? 0)
-          : "boolean" in s ? false : "";
+        a.data[sel.value] = seedValue(this._fieldMeta(a, sel.value));
         d.error = null;
         this._render();
       }));
@@ -1577,6 +1681,38 @@ class SbSchedulerCard extends HTMLElement {
       el.addEventListener("input", () => { actOf(el).data[el.dataset.k] = Number(el.value); }));
     root.querySelectorAll("input.fld-bool").forEach((el) =>
       el.addEventListener("change", () => { actOf(el).data[el.dataset.k] = el.checked; }));
+    // Entity fields. The filter repopulates its select IN PLACE, like the
+    // action's own entity filter, so typing keeps focus.
+    root.querySelectorAll("input.fld-ent-filter").forEach((el) =>
+      el.addEventListener("input", () => {
+        const a = actOf(el), k = el.dataset.k;
+        (a.ffilter ||= {})[k] = el.value;
+        const sel = el.parentElement.querySelector("select");
+        if (sel) sel.innerHTML = this._fldEntOpts(a, k);
+      }));
+    root.querySelectorAll("select.fld-ent").forEach((sel) =>
+      sel.addEventListener("change", () => {
+        actOf(sel).data[sel.dataset.k] = sel.value;
+        d.error = null;
+        this._render();
+      }));
+    root.querySelectorAll("select.fld-ents-add").forEach((sel) =>
+      sel.addEventListener("change", () => {
+        if (!sel.value) return;
+        const a = actOf(sel), k = sel.dataset.k;
+        a.data[k] = [...entityList(a.data[k]), sel.value];
+        d.error = null;
+        this._render();
+      }));
+    root.querySelectorAll("button.fld-ents-drop").forEach((b) =>
+      b.addEventListener("click", () => {
+        const a = actOf(b), k = b.dataset.k;
+        const list = entityList(a.data[k]);
+        list.splice(Number(b.dataset.i), 1);
+        a.data[k] = list;
+        d.error = null;
+        this._render();
+      }));
     root.querySelectorAll("button.dropfield").forEach((b) =>
       b.addEventListener("click", () => {
         delete actOf(b).data[b.dataset.k];
@@ -1710,6 +1846,12 @@ option { background: var(--card-background-color); color: var(--primary-text-col
 .fkey { font-size: .85em; color: var(--secondary-text-color); flex: 0 0 96px;
         overflow: hidden; text-overflow: ellipsis; }
 .fieldrow input { flex: 1; min-width: 0; }
+.fkey .req { color: var(--error-color); margin-left: 2px; }
+.fldent { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.fldent .pair select { flex: 1; min-width: 0; }
+.chip.ent { display: inline-flex; align-items: center; gap: 4px; }
+.chip.ent button { background: none; border: none; color: inherit; cursor: pointer;
+                   padding: 0 0 0 2px; font-size: .9em; }
 .opaque { flex: 1; font-size: .8em; color: var(--secondary-text-color);
           font-family: monospace; overflow: hidden; text-overflow: ellipsis;
           white-space: nowrap; }
