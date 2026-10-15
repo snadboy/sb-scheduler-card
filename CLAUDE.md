@@ -404,3 +404,6 @@ HA's Lit context providers. Mount test cards inside `hui-view` — there the ico
 ## v0.18.0 (2026-10-14) — the kit is shared at run time
 
 The row kit copy (and the step / hollow-chip rules, moved into the kit) is gone: the card uses the shared row style from the SB UI Kit integration (window.SBKit) at run time instead of carrying its own copy; requires sb_ui_kit (manifest dependency). Waits ("Loading…") if it loads first; "not loaded" after 15 s.
+
+## v0.18.2 (2026-10-15)
+Kit loader: if a page missed the SB UI Kit (opened while HA was restarting, or a slow device) the card fetches it itself after 3 s, and redraws if it arrives after the 15 s "not loaded" message. Seen live: a card stuck on "SB UI Kit is not loaded" after HA's 05:51 restart.
