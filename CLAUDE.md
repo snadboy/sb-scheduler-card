@@ -407,3 +407,7 @@ The row kit copy (and the step / hollow-chip rules, moved into the kit) is gone:
 
 ## v0.18.2 (2026-10-15)
 Kit loader: if a page missed the SB UI Kit (opened while HA was restarting, or a slow device) the card fetches it itself after 3 s, and redraws if it arrives after the 15 s "not loaded" message. Seen live: a card stuck on "SB UI Kit is not loaded" after HA's 05:51 restart.
+
+## v0.19.0 (2026-10-15) — collapse the card
+
+User: "Add collapse ability to SB Watch, Background and Schedule cards." Collapse: a chevron at the end of the header hides / shows the entries ("Hide the entries" / "Show the entries"), remembered per card (type + title) per browser in localStorage `sb-card-collapsed:<card>:<title>`; collapsed, the header count adds a red "· N need attention" for rows tinted warn/bad. No chevron with `panel: true`. Same helpers (foldKey/foldGet/foldSet/foldBtn) in all three SB cards. The per-schedule step folding is separate.

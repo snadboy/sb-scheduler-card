@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.18.2";
+const VERSION = "0.19.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -192,6 +192,14 @@ const whenKit = () => kitPromise || (kitPromise = new Promise((resolve) => {
   setTimeout(() => { if (!kit()) import(`/sb_ui_kit_static/sb-ui-kit.js?v=retry-${Date.now()}`).then(on, () => {}); }, 3000);
   setTimeout(() => resolve(kit()), 15000);     // still null: not installed (or HA unreachable)
 }));
+// Collapsed or not, per card (type + title), per browser. Storage can be blocked (private
+// window): then it simply is not remembered. (The per-schedule STEP folding is separate:
+// sb-scheduler-card.collapsed.)
+const foldKey = (card, title) => `sb-card-collapsed:${card}:${title || ""}`;
+const foldGet = (k) => { try { return localStorage.getItem(k) === "1"; } catch (e) { return false; } };
+const foldSet = (k, v) => { try { if (v) localStorage.setItem(k, "1"); else localStorage.removeItem(k); } catch (e) { /* not remembered */ } };
+const foldBtn = (folded) => `<button class="sbk-kb fold" title="${folded ? "Show the entries" : "Hide the entries"}" aria-label="${folded ? "Show the entries" : "Hide the entries"}" aria-expanded="${folded ? "false" : "true"}"><ha-icon icon="${folded ? "mdi:chevron-down" : "mdi:chevron-up"}"></ha-icon></button>`;
+
 const KIT_MISSING = `<div style="padding: 16px; color: var(--error-color)">The <b>SB UI Kit</b> integration is not loaded — install “SB UI Kit” from HACS and restart Home Assistant.</div>`;
 
 // When a step last ran: "today 6:34 PM", "yesterday 7:12 AM", "Mon 6:30 AM", "Oct 3".
@@ -805,11 +813,16 @@ class SbSchedulerCard extends HTMLElement {
       { act: "ds", icon: "mdi:calendar-multiple", label: "Day types…" },
       { act: "refresh", icon: "mdi:refresh", label: "Recompute day types now" },
     ]) : "";
+    const folded = foldGet(foldKey("sb-scheduler-card", this._config.title));
+    // collapsed, a schedule that will not run (enabled, nothing upcoming) must still be visible
+    const attention = folded ? rows.filter((s) => s.state !== "off" && this._steps(s).length &&
+      !this._steps(s).some((t) => t.enabled !== false && t.next_trigger) && !s.next_trigger).length : 0;
     const head = `<div class="sbk-head sbk-hwrap"><h2>${esc(this._config.title || "Schedules")}</h2>
-      <span class="sbk-count">${rows.length} schedule${rows.length === 1 ? "" : "s"}</span>
+      <span class="sbk-count">${rows.length} schedule${rows.length === 1 ? "" : "s"}${attention ? ` · <span style="color: var(--error-color)">${attention} need${attention === 1 ? "s" : ""} attention</span>` : ""}</span>
       <button class="sbk-add new" title="Add a schedule"><ha-icon icon="mdi:plus"></ha-icon>Add</button>
-      <button class="sbk-kb hkb ${headMenu ? "on" : ""}" aria-label="More: day types, recompute" title="More: day types, recompute" aria-expanded="${headMenu ? "true" : "false"}">${kit().kbIcon}</button>${headMenu}
+      <button class="sbk-kb hkb ${headMenu ? "on" : ""}" aria-label="More: day types, recompute" title="More: day types, recompute" aria-expanded="${headMenu ? "true" : "false"}">${kit().kbIcon}</button>${headMenu}${foldBtn(folded)}
     </div>`;
+    if (folded) return head;
     if (!rows.length) return `${head}<div class="sbk-empty">No schedules yet — press Add.</div>`;
     return head + rows.map((s) => {
       const id = s.schedule_id;
@@ -1549,6 +1562,9 @@ class SbSchedulerCard extends HTMLElement {
     root.querySelectorAll(".sbk-row .rkb").forEach((b) =>
       b.addEventListener("click", () => { const id = idOf(b); this._setMenu(this._menu === id ? null : id); }));
     root.querySelector(".sbk-head .hkb")?.addEventListener("click", () => this._setMenu(this._menu === "__head" ? null : "__head"));
+    root.querySelector(".sbk-head .fold")?.addEventListener("click", () => {
+      const k = foldKey("sb-scheduler-card", this._config.title); foldSet(k, !foldGet(k)); this._sig = null; this._render();
+    });
     root.querySelector("button.new")?.addEventListener("click", () => this._beginCreate());
     root.querySelectorAll(".sbk-menu button").forEach((b) =>
       b.addEventListener("click", async () => {
