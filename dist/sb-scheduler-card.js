@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.19.0";
+const VERSION = "0.19.1";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -198,7 +198,7 @@ const whenKit = () => kitPromise || (kitPromise = new Promise((resolve) => {
 const foldKey = (card, title) => `sb-card-collapsed:${card}:${title || ""}`;
 const foldGet = (k) => { try { return localStorage.getItem(k) === "1"; } catch (e) { return false; } };
 const foldSet = (k, v) => { try { if (v) localStorage.setItem(k, "1"); else localStorage.removeItem(k); } catch (e) { /* not remembered */ } };
-const foldBtn = (folded) => `<button class="sbk-kb fold" title="${folded ? "Show the entries" : "Hide the entries"}" aria-label="${folded ? "Show the entries" : "Hide the entries"}" aria-expanded="${folded ? "false" : "true"}"><ha-icon icon="${folded ? "mdi:chevron-down" : "mdi:chevron-up"}"></ha-icon></button>`;
+const foldBtn = (folded) => `<button class="sbk-kb fold" title="${folded ? "Show the entries" : "Hide the entries"}" aria-label="${folded ? "Show the entries" : "Hide the entries"}" aria-expanded="${folded ? "false" : "true"}"><ha-icon icon="${folded ? "mdi:chevron-right" : "mdi:chevron-down"}"></ha-icon></button>`;
 
 const KIT_MISSING = `<div style="padding: 16px; color: var(--error-color)">The <b>SB UI Kit</b> integration is not loaded — install “SB UI Kit” from HACS and restart Home Assistant.</div>`;
 
@@ -868,7 +868,7 @@ class SbSchedulerCard extends HTMLElement {
           <span class="sbk-txt"><span class="sbk-t">${esc(s.label)}</span>
             <span class="sbk-s"><span class="sbk-chip ${s.negate ? "neg" : ""}">${esc(chip)}</span>${esc(doing)}</span>${third}</span>
         </button>
-        ${multi ? `<button class="sbk-kb disclose" data-id="${esc(id)}" aria-expanded="${shut ? "false" : "true"}" aria-label="${shut ? "Show" : "Hide"} the steps of ${esc(s.label)}" title="${shut ? "Show" : "Hide"} the steps"><ha-icon icon="${shut ? "mdi:chevron-down" : "mdi:chevron-up"}"></ha-icon></button>` : ""}
+        ${multi ? `<button class="sbk-kb disclose" data-id="${esc(id)}" aria-expanded="${shut ? "false" : "true"}" aria-label="${shut ? "Show" : "Hide"} the steps of ${esc(s.label)}" title="${shut ? "Show" : "Hide"} the steps"><ha-icon icon="${shut ? "mdi:chevron-right" : "mdi:chevron-down"}"></ha-icon></button>` : ""}
         <label class="sbk-sw"><input type="checkbox" role="switch" class="enable" data-entity="${esc(s.entity_id)}" ${on ? "checked" : ""} aria-label="${esc(s.label)} enabled" title="${on ? "On — click to turn this schedule off" : "Off — click to turn it on"}"><span></span></label>
         <button class="sbk-kb rkb ${menu ? "on" : ""}" aria-label="More actions for ${esc(s.label)}" title="More: duplicate, run now, delete" aria-expanded="${menu ? "true" : "false"}">${kit().kbIcon}</button>
         ${menu}
