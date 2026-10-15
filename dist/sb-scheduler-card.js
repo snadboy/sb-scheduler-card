@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.16.0";
+const VERSION = "0.17.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -175,6 +175,100 @@ const summarise = (step) => {
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---- the SB row kit — the SAME markup and CSS in sb-scheduler-card, sb-watch-card and here
+// (agreed mockup 2026-10-14: header = title · count · + Add · ⋮; row = status icon · name ·
+// one summary line (chip + what it is doing now) · enabled toggle · ⋮; tap the row = edit;
+// Duplicate / Run now|Restart / Delete… live in ⋮; delete confirms inline; a third line
+// only for a warning or a problem). Theme variables only, so light and dark themes both work.
+const KIT_CSS = `
+ha-card { overflow: visible; }
+.sbk-head { display: flex; align-items: center; gap: 8px; padding: 12px 4px 8px 16px; }
+.sbk-head h2 { margin: 0; font-size: 20px; font-weight: 500; line-height: 1.2; }
+.sbk-count { flex: 1; font-size: 13px; color: var(--secondary-text-color); }
+.sbk-add { display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 14px 0 10px; border-radius: 18px; border: none;
+           background: color-mix(in srgb, var(--primary-color) 16%, transparent); color: var(--primary-color);
+           font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; --mdc-icon-size: 18px; }
+.sbk-kb { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: none; background: none; padding: 0;
+          color: var(--secondary-text-color); border-radius: 22px; cursor: pointer; flex: 0 0 44px; --mdc-icon-size: 20px; }
+.sbk-kb:hover, .sbk-kb.on { background: color-mix(in srgb, var(--primary-text-color) 10%, transparent); }
+.sbk-row { position: relative; display: flex; align-items: center; gap: 4px; padding: 0 4px 0 12px; border-top: 1px solid var(--divider-color); min-height: 68px; }
+.sbk-row.off .sbk-open { opacity: .5; }
+.sbk-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 10px 0; border: none; background: none;
+            text-align: left; color: inherit; font: inherit; cursor: pointer; border-radius: 8px; }
+.sbk-ico { width: 40px; height: 40px; border-radius: 20px; display: flex; align-items: center; justify-content: center; flex: 0 0 40px; --mdc-icon-size: 22px; }
+.sbk-ico.armed { background: color-mix(in srgb, var(--primary-color) 16%, transparent); color: var(--primary-color); }
+.sbk-ico.run { background: color-mix(in srgb, var(--success-color, #43a047) 20%, transparent); color: var(--success-color, #43a047); }
+.sbk-ico.idle { background: color-mix(in srgb, var(--primary-text-color) 7%, transparent); color: var(--secondary-text-color); }
+.sbk-ico.warn { background: color-mix(in srgb, var(--warning-color, #ffa600) 18%, transparent); color: var(--warning-color, #ffa600); }
+.sbk-ico.bad { background: color-mix(in srgb, var(--error-color, #db4437) 20%, transparent); color: var(--error-color, #db4437); }
+.sbk-txt { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.sbk-t { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--primary-text-color); }
+.sbk-s { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; font-size: 13px; line-height: 1.35; color: var(--secondary-text-color); }
+.sbk-chip { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; flex: 0 0 auto;
+            background: color-mix(in srgb, var(--primary-color) 16%, transparent); color: var(--primary-color); }
+.sbk-dot { width: 3px; height: 3px; border-radius: 2px; background: var(--secondary-text-color); opacity: .7; flex: 0 0 3px; }
+.sbk-m { font-size: 12.5px; line-height: 1.35; white-space: normal; }
+.sbk-m.bad { color: var(--error-color, #db4437); }
+.sbk-m.warn { color: var(--warning-color, #ffa600); }
+.sbk-sw { position: relative; width: 40px; height: 24px; flex: 0 0 40px; margin: 0 4px; }
+.sbk-sw input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; z-index: 1; }
+.sbk-sw span { position: absolute; inset: 0; border-radius: 12px; background: var(--disabled-color, #9e9e9e); pointer-events: none; transition: background .15s; }
+.sbk-sw span::after { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; border-radius: 9px; background: #fff; transition: left .15s; }
+.sbk-sw input:checked + span { background: var(--primary-color); }
+.sbk-sw input:checked + span::after { left: 19px; }
+.sbk-sw input:focus-visible + span { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+.sbk-menu { position: absolute; right: 8px; top: 52px; z-index: 5; min-width: 196px; padding: 6px 0; display: flex; flex-direction: column;
+            background: var(--card-background-color, #fff); border: 1px solid var(--divider-color); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+.sbk-menu button { display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 16px; border: none; border-radius: 0; background: none;
+                   color: var(--primary-text-color); font: inherit; font-size: 14px; text-align: left; cursor: pointer; --mdc-icon-size: 18px; }
+.sbk-menu button:hover { background: color-mix(in srgb, var(--primary-text-color) 8%, transparent); }
+.sbk-menu button:disabled { opacity: .45; cursor: default; }
+.sbk-menu .del { color: var(--error-color, #db4437); }
+.sbk-menu hr { border: none; border-top: 1px solid var(--divider-color); margin: 4px 0; }
+.sbk-head .sbk-menu { top: 50px; }
+.sbk-hwrap { position: relative; }
+.sbk-confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 12px 12px 16px; min-height: 68px; box-sizing: border-box;
+               border-top: 1px solid var(--divider-color); background: color-mix(in srgb, var(--error-color, #db4437) 10%, transparent); }
+.sbk-confirm p { margin: 0; flex: 1 1 180px; font-size: 14px; }
+.sbk-btn { height: 36px; padding: 0 16px; border-radius: 18px; border: 1px solid var(--divider-color); background: none;
+           color: var(--primary-text-color); font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; }
+.sbk-btn.danger { background: var(--error-color, #db4437); border-color: var(--error-color, #db4437); color: #fff; }
+.sbk-empty { color: var(--secondary-text-color); padding: 12px 16px 16px; border-top: 1px solid var(--divider-color); }
+.sbk-note { color: var(--secondary-text-color); font-size: 13px; padding: 8px 16px 12px; border-top: 1px solid var(--divider-color); }
+`;
+const KB_ICON = `<ha-icon icon="mdi:dots-vertical"></ha-icon>`;
+const kitMenu = (label, items) => `<div class="sbk-menu" role="menu" aria-label="${esc(label)}">${items.map((it) => it === "-" ? "<hr>"
+  : `<button role="menuitem" data-act="${esc(it.act)}" class="${it.danger ? "del" : ""}" ${it.disabled ? "disabled" : ""}><ha-icon icon="${esc(it.icon)}"></ha-icon>${esc(it.label)}</button>`).join("")}</div>`;
+
+
+// When a step last ran: "today 6:34 PM", "yesterday 7:12 AM", "Mon 6:30 AM", "Oct 3".
+const lastText = (iso) => {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const now = new Date();
+  const days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+  const t = ` ${clock12(`${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`)}`;
+  if (days === 0) return `today${t}`;
+  if (days === 1) return `yesterday${t}`;
+  if (days > 1 && days < 7) return `${d.toLocaleDateString(undefined, { weekday: "short" })}${t}`;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+};
+
+// When a schedule next runs, for the row's summary: "today 6:34 PM", "tomorrow",
+// "Thu 6:30 AM", "Nov 3". withTime=false drops the clock (the summary already shows it).
+const nextText = (iso, withTime = true) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const now = new Date();
+  const days = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+  const t = withTime ? ` ${clock12(`${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`)}` : "";
+  if (days === 0) return `today${t}`;
+  if (days === 1) return `tomorrow${t}`;
+  if (days > 1 && days < 7) return `${d.toLocaleDateString(undefined, { weekday: "short" })}${t}`;
+  return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}${t}`;
+};
 
 // "2026-09-21T06:30:00-05:00" -> "Mon, Sep 21, 6:30 AM"
 // hour12 is forced rather than left to the locale, so this matches clock12.
@@ -641,9 +735,13 @@ class SbSchedulerCard extends HTMLElement {
     // day-sets — are modal <dialog>s: showModal() puts them in the browser's
     // top layer, so they overlay the whole page from inside this shadow root
     // with no HA dialog machinery involved, and the card never grows.
-    this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card>${
-      this._config.title ? `<h1 class="card-header">${esc(this._config.title)}</h1>` : ""
-    }<div class="body">${this._listHtml()}</div></ha-card>${this._scDialogHtml()}${this._dsDialogHtml()}`;
+    this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card><div class="body">${this._listHtml()}</div></ha-card>${this._scDialogHtml()}${this._dsDialogHtml()}`;
+    // the first action's entity, state-aware, inside the row's tinted circle
+    this.shadowRoot.querySelectorAll(".sbk-row .ph").forEach((ph) => {
+      const st = this._hass.states[ph.dataset.ent];
+      if (!st) { ph.outerHTML = `<ha-icon icon="mdi:calendar-clock"></ha-icon>`; return; }
+      const el = document.createElement("ha-state-icon"); el.hass = this._hass; el.stateObj = st; ph.replaceWith(el);
+    });
     this._wire();
     this.shadowRoot.querySelectorAll("dialog").forEach((dlg) => {
       if (!dlg.open) {
@@ -691,6 +789,7 @@ class SbSchedulerCard extends HTMLElement {
 
   disconnectedCallback() {
     this._removeScrollLock();
+    this._unMenu?.();
   }
 
   _dsDialogHtml() {
@@ -708,73 +807,101 @@ class SbSchedulerCard extends HTMLElement {
     this._render();
   }
 
-  _listHtml() {
-    const rows = this._schedules();
-    const add = `<div class="addrow">
-      <button class="new">+ New schedule</button>
-      <button class="dsopen" title="Create and edit the day types schedules run on">Day types…</button>
-      <button class="refreshnow" title="Recompute every day type now (source calendars are otherwise re-read every 15 minutes)">↻</button>
-    </div>`;
-    if (!rows.length) {
-      return `<div class="empty">No schedules yet.</div>${add}`;
+  /** The row icon: the first action's entity (its own, state-aware icon), else one by service. */
+  _iconFor(s) {
+    const states = this._hass?.states || {};
+    const BY_DOMAIN = { notify: "mdi:bell-outline", persistent_notification: "mdi:bell-outline", script: "mdi:script-text-outline",
+      scene: "mdi:palette-outline", light: "mdi:lightbulb-outline", switch: "mdi:toggle-switch-outline", valve: "mdi:valve",
+      climate: "mdi:thermostat", cover: "mdi:window-shutter", media_player: "mdi:speaker", fan: "mdi:fan", lock: "mdi:lock-outline" };
+    for (const step of this._steps(s)) {
+      for (const act of step.actions || []) {
+        const e = act.entity_id ?? act.service_data?.entity_id;
+        const id = Array.isArray(e) ? e[0] : e;
+        if (id && states[id]) return { entity: id };
+        const dom = String(act.service || "").split(".")[0];
+        if (BY_DOMAIN[dom]) return { icon: BY_DOMAIN[dom] };
+      }
     }
-    return rows.map((s) => {
+    return { icon: "mdi:calendar-clock" };
+  }
+
+  _listHtml() {
+    const rows = this._schedules().map((s) => ({ ...s, label: s.schedule_name || s.friendly_name }))
+      .sort((a, b) => String(a.label).localeCompare(String(b.label)));
+    const dsName = Object.fromEntries(this._daySets().map((d) => [d.id, d.name]));
+    const headMenu = this._menu === "__head" ? kitMenu("Card actions", [
+      { act: "ds", icon: "mdi:calendar-multiple", label: "Day types…" },
+      { act: "refresh", icon: "mdi:refresh", label: "Recompute day types now" },
+    ]) : "";
+    const head = `<div class="sbk-head sbk-hwrap"><h2>${esc(this._config.title || "Schedules")}</h2>
+      <span class="sbk-count">${rows.length} schedule${rows.length === 1 ? "" : "s"}</span>
+      <button class="sbk-add new"><ha-icon icon="mdi:plus"></ha-icon>Add</button>
+      <button class="sbk-kb hkb ${headMenu ? "on" : ""}" aria-label="More: day types, recompute" aria-expanded="${headMenu ? "true" : "false"}">${KB_ICON}</button>${headMenu}
+    </div>`;
+    if (!rows.length) return `${head}<div class="sbk-empty">No schedules yet — press Add.</div>`;
+    return head + rows.map((s) => {
+      const id = s.schedule_id;
+      if (this._confirm === id) {
+        return `<div class="sbk-confirm" data-id="${esc(id)}"><p>Delete <b>${esc(s.label)}</b>?${this._steps(s).length > 1 ? ` Its ${this._steps(s).length} steps go with it.` : ""}</p>
+          <button class="sbk-btn nodel">Keep</button><button class="sbk-btn danger dodel">Delete</button></div>`;
+      }
       const steps = this._steps(s);
       const on = s.state !== "off";
-      // EVERY schedule renders its steps on the rail, one step or ten. The
-      // one-step case used to be flattened into the header, which hid the
-      // step's name and made a schedule's shape depend on how many steps it
-      // happened to have.
-      const shut = this._collapsed.has(s.schedule_id);
-      // Folded up, the row still has to say WHEN it runs — so the disclosure
-      // carries the summary: one step shows its time, several show the count.
-      const gist = steps.length === 1
-        ? summarise(steps[0])
-        : `${steps.length} steps`;
-      return `<div class="row ${on ? "" : "disabled"}">
-        <div class="head">
-          <div class="info">
-            <div class="name">${esc(s.friendly_name)}</div>
-            <div class="meta">
-              <span class="chip ${s.negate ? "neg" : ""}">${s.negate ? "not " : ""}${esc(s.day_set)}</span>
-              <button class="disclose" data-id="${esc(s.schedule_id)}"
-                      aria-expanded="${shut ? "false" : "true"}"
-                      title="${shut ? "Show" : "Hide"} this schedule's steps">
-                <span class="tri ${shut ? "" : "open"}">▶</span>${esc(gist)}
-              </button>
-            </div>
-          </div>
-          <div class="controls">
-            <label class="toggle" title="${on ? "Disable" : "Enable"} this schedule">
-              <input type="checkbox" class="enable" data-entity="${esc(s.entity_id)}" ${on ? "checked" : ""}>
-              <span></span>
-            </label>
-            <button class="edit" data-id="${esc(s.schedule_id)}">Edit</button>
-            <button class="dup" data-id="${esc(s.schedule_id)}" title="Opens a copy to adjust — nothing is created until you press Create">Duplicate</button>
-          </div>
-        </div>
-        ${shut ? "" : `<div class="steps">${steps.map((step) => {
-          const stepOn = step.enabled !== false;
-          return `<div class="step ${stepOn && on ? "" : "disabled"}">
-            <div class="info">
-              <div class="sname">${esc(step.name)}
-                <span class="stimes">${esc(summarise(step))}</span></div>
-              <div class="sub">Last: ${esc(step.last_triggered ? prettyTrigger(step.last_triggered) : "never")}</div>
-              <div class="sub">Next: ${on && stepOn ? esc(prettyTrigger(step.next_trigger)) : "—"}</div>
-            </div>
-            <div class="controls">
-              <label class="toggle small" title="${stepOn ? "Disable" : "Enable"} this step">
-                <input type="checkbox" class="step-enable" data-id="${esc(s.schedule_id)}"
-                       data-step="${esc(step.step_id)}" ${stepOn ? "checked" : ""}>
-                <span></span>
-              </label>
-              <button class="run" data-entity="${esc(s.entity_id)}" data-step="${esc(step.step_id)}"
-                      title="Run this step's actions now, ignoring the day type">Run now</button>
-            </div>
-          </div>`;
-        }).join("")}</div>`}
-      </div>`;
-    }).join("") + add;
+      const nexts = steps.filter((t) => t.enabled !== false && t.next_trigger).map((t) => t.next_trigger).sort();
+      const next = nexts[0] || s.next_trigger || null;
+      const multi = steps.length > 1;
+      const shut = this._collapsed.has(id);
+      // the summary: the time (one step) or the step count, then when it next runs
+      const when = multi ? `${steps.length} steps` : (steps[0] ? summarise(steps[0]) : "no steps");
+      const doing = !on ? `${when} · off` : next ? `${when} · ${nextText(next, multi)}` : when;
+      const nothing = on && !next && steps.length;
+      const tint = !on ? "idle" : nothing ? "warn" : "armed";
+      const third = nothing ? `<span class="sbk-m warn">Nothing scheduled — no upcoming date for this day type.</span>` : "";
+      const ic = this._iconFor(s);
+      const chip = `${s.negate ? "not " : ""}${dsName[s.day_set] || s.day_set}`;
+      const menu = this._menu === id ? kitMenu(`${s.label} actions`, [
+        { act: "edit", icon: "mdi:pencil", label: "Edit" },
+        { act: "dup", icon: "mdi:content-copy", label: "Duplicate" },
+        { act: "run", icon: "mdi:play", label: "Run now" },
+        "-",
+        { act: "del", icon: "mdi:delete-outline", label: "Delete…", danger: true },
+      ]) : "";
+      const stepRows = multi && !shut ? steps.map((step) => {
+        const stepOn = step.enabled !== false;
+        const bits = [summarise(step)];
+        if (on && stepOn && step.next_trigger) bits.push(`next ${nextText(step.next_trigger, false)}`);
+        if (step.last_triggered) bits.push(`last ${lastText(step.last_triggered)}`);
+        return `<div class="sbk-step ${stepOn && on ? "" : "off"}">
+          <div class="sbk-txt" style="flex: 1"><span class="sbk-t">${esc(step.name)}</span><span class="sbk-s">${esc(bits.join(" · "))}</span></div>
+          <label class="sbk-sw"><input type="checkbox" role="switch" class="step-enable" data-id="${esc(id)}" data-step="${esc(step.step_id)}" ${stepOn ? "checked" : ""} aria-label="${esc(step.name)} enabled"><span></span></label>
+          <button class="sbk-kb run" data-entity="${esc(s.entity_id)}" data-step="${esc(step.step_id)}" aria-label="Run ${esc(step.name)} now" title="Run this step's actions now, ignoring the day type"><ha-icon icon="mdi:play"></ha-icon></button>
+        </div>`;
+      }).join("") : "";
+      return `<div class="sbk-row ${on ? "" : "off"}" data-id="${esc(id)}">
+        <button class="sbk-open" aria-label="Edit ${esc(s.label)}">
+          <span class="sbk-ico ${tint}">${ic.entity ? `<span class="ph" data-ent="${esc(ic.entity)}"></span>` : `<ha-icon icon="${esc(ic.icon)}"></ha-icon>`}</span>
+          <span class="sbk-txt"><span class="sbk-t">${esc(s.label)}</span>
+            <span class="sbk-s"><span class="sbk-chip ${s.negate ? "neg" : ""}">${esc(chip)}</span>${esc(doing)}</span>${third}</span>
+        </button>
+        ${multi ? `<button class="sbk-kb disclose" data-id="${esc(id)}" aria-expanded="${shut ? "false" : "true"}" aria-label="${shut ? "Show" : "Hide"} the steps of ${esc(s.label)}"><ha-icon icon="${shut ? "mdi:chevron-down" : "mdi:chevron-up"}"></ha-icon></button>` : ""}
+        <label class="sbk-sw"><input type="checkbox" role="switch" class="enable" data-entity="${esc(s.entity_id)}" ${on ? "checked" : ""} aria-label="${esc(s.label)} enabled"><span></span></label>
+        <button class="sbk-kb rkb ${menu ? "on" : ""}" aria-label="More actions for ${esc(s.label)}" aria-expanded="${menu ? "true" : "false"}">${KB_ICON}</button>
+        ${menu}
+      </div>${stepRows}`;
+    }).join("");
+  }
+
+  _setMenu(id) {
+    this._menu = id;
+    // one outside click / Escape closes it; installed only while a menu is open
+    this._unMenu?.();
+    if (id) {
+      const away = (e) => { if (!e.composedPath().some((n) => n.classList?.contains("sbk-menu") || n.classList?.contains("sbk-kb"))) this._setMenu(null); };
+      const esc_ = (e) => { if (e.key === "Escape") this._setMenu(null); };
+      setTimeout(() => { window.addEventListener("click", away, true); window.addEventListener("keydown", esc_, true); });
+      this._unMenu = () => { window.removeEventListener("click", away, true); window.removeEventListener("keydown", esc_, true); this._unMenu = null; };
+    }
+    this._render();
   }
 
   /* --- day-sets ----------------------------------------------------------
@@ -1449,11 +1576,34 @@ class SbSchedulerCard extends HTMLElement {
       });
       root.querySelector("button.discard")?.addEventListener("click", () => this._cancel());
     }
-    root.querySelectorAll("button.edit").forEach((b) =>
-      b.addEventListener("click", () => this._beginEdit(b.dataset.id)));
-    root.querySelectorAll("button.dup").forEach((b) =>
-      b.addEventListener("click", () => this._beginDuplicate(b.dataset.id)));
+    const idOf = (el) => el.closest("[data-id]")?.dataset.id;
+    root.querySelectorAll(".sbk-row .sbk-open").forEach((b) =>
+      b.addEventListener("click", () => this._beginEdit(idOf(b))));
+    root.querySelectorAll(".sbk-row .rkb").forEach((b) =>
+      b.addEventListener("click", () => { const id = idOf(b); this._setMenu(this._menu === id ? null : id); }));
+    root.querySelector(".sbk-head .hkb")?.addEventListener("click", () => this._setMenu(this._menu === "__head" ? null : "__head"));
     root.querySelector("button.new")?.addEventListener("click", () => this._beginCreate());
+    root.querySelectorAll(".sbk-menu button").forEach((b) =>
+      b.addEventListener("click", async () => {
+        const act = b.dataset.act, id = idOf(b);
+        this._setMenu(null);
+        if (act === "ds") { this._dsDialog = "list"; this._render(); }
+        else if (act === "refresh") { try { await this._hass.callService("sb_scheduler", "refresh", {}); } catch (err) { /* the list re-reads on its own */ } }
+        else if (act === "edit") this._beginEdit(id);
+        else if (act === "dup") this._beginDuplicate(id);
+        else if (act === "del") { this._confirm = id; this._render(); }
+        else if (act === "run") {
+          const s = this._schedules().find((x) => x.schedule_id === id);
+          if (s) await this._hass.callService("sb_scheduler", "run_now", { entity_id: s.entity_id });
+        }
+      }));
+    root.querySelector(".sbk-confirm .nodel")?.addEventListener("click", () => { this._confirm = null; this._render(); });
+    root.querySelector(".sbk-confirm .dodel")?.addEventListener("click", async () => {
+      const id = this._confirm; this._confirm = null;
+      try { await this._hass.callService("sb_scheduler", "remove_schedule", { schedule_id: id }); }
+      catch (err) { /* the row simply stays */ }
+      this._render();
+    });
 
     root.querySelectorAll("button.disclose").forEach((b) =>
       b.addEventListener("click", () => {
@@ -1470,20 +1620,16 @@ class SbSchedulerCard extends HTMLElement {
     root.querySelectorAll("button.run").forEach((b) =>
       b.addEventListener("click", async () => {
         b.disabled = true;
-        b.textContent = "Running…";
         try {
           const data = { entity_id: b.dataset.entity };
           if (b.dataset.step) data.step_id = b.dataset.step;
           await this._hass.callService("sb_scheduler", "run_now", data);
         } catch (err) {
-          b.textContent = "Failed";
-          b.title = String(err?.message || err);
+          b.title = `Failed: ${err?.message || err}`;
+          b.disabled = false;
           return;
         }
-        setTimeout(() => {
-          b.disabled = false;
-          b.textContent = "Run now";
-        }, 1500);
+        setTimeout(() => { b.disabled = false; }, 1500);
       }));
 
     root.querySelectorAll("input.enable").forEach((box) =>
@@ -1734,12 +1880,17 @@ class SbSchedulerCard extends HTMLElement {
   }
 }
 
-const STYLE = `
+const STYLE = KIT_CSS + `
 :host { display: block; }
 /* Native select popups ignore the page theme unless told otherwise. */
 :host { color-scheme: light dark; }
 .card-header { font-size: 1.25rem; padding: 12px 16px 0; margin: 0; }
-.body { padding: 8px 16px 16px; }
+.body { padding: 0 0 4px; }
+.sbk-chip.neg { background: none; border: 1px solid var(--primary-color); padding: 1px 7px; }
+.sbk-step { display: flex; align-items: center; gap: 4px; padding: 0 4px 0 64px; min-height: 52px; border-top: 1px solid var(--divider-color);
+            background: color-mix(in srgb, var(--primary-text-color) 2.5%, transparent); }
+.sbk-step.off .sbk-txt { opacity: .5; }
+.sbk-step .sbk-t { font-size: 14px; }
 .empty { color: var(--secondary-text-color); padding: 12px 0; line-height: 1.5; }
 .row { padding: 10px 0; border-bottom: 1px solid var(--divider-color); }
 .row.disabled .name, .row.disabled .meta, .row.disabled .steps { opacity: .55; }

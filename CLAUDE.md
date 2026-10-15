@@ -383,3 +383,20 @@ entities, drop one → `field_ents: [one id]`. All 7 live schedules open with no
 validation error except the user's own "Script" test (its stored action lacks
 `field_ent`, which now shows as a blank required row). Bins Out's `data` still
 opaque, bedside `brightness` still a number.
+
+## v0.17.0 (2026-10-14) — the shared SB row style
+
+One style for SB Scheduler, SB Watch and SB Background, agreed from a canvas mockup. The row
+kit (`KIT_CSS`, `kitMenu`, `sbk-*`) is copied VERBATIM from sb-background's card — change it
+in all three. Header = title · "N schedules" · + Add · ⋮ (Day types…, Recompute day types now —
+the old footer row is gone). Row = icon of the first action's entity (ha-state-icon; else by
+service: notify → bell) in a tinted circle (armed; idle + dimmed when off; warn + third line
+when enabled but nothing is scheduled) · `schedule_name` (no "SB " device prefix) · chip = day
+type's DISPLAY name (hollow `not …` when negated) + time (one step) or "N steps", then when it
+next runs (`nextText`) · chevron (multi-step only; the collapsed set in localStorage as before)
+· Enabled toggle · ⋮ (Edit, Duplicate, Run now = whole schedule, Delete… → inline confirm →
+remove_schedule). Tap the row = edit. Multi-step schedules list their steps under the row:
+name, times · next · last (`lastText`), step toggle, ▶ Run now. A one-step schedule shows no
+step row (its time is in the summary). Verified headless on the live schedules, no errors.
+Headless pages show lock/valve icons as HA's bookmark placeholder (domain icons not loaded in
+a bare test page) — real dashboards show the right ones, as the old cards did.
