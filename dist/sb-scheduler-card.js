@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.17.0";
+const VERSION = "0.18.0";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -176,71 +176,19 @@ const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// ---- the SB row kit — the SAME markup and CSS in sb-scheduler-card, sb-watch-card and here
-// (agreed mockup 2026-10-14: header = title · count · + Add · ⋮; row = status icon · name ·
-// one summary line (chip + what it is doing now) · enabled toggle · ⋮; tap the row = edit;
-// Duplicate / Run now|Restart / Delete… live in ⋮; delete confirms inline; a third line
-// only for a warning or a problem). Theme variables only, so light and dark themes both work.
-const KIT_CSS = `
-ha-card { overflow: visible; }
-.sbk-head { display: flex; align-items: center; gap: 8px; padding: 12px 4px 8px 16px; }
-.sbk-head h2 { margin: 0; font-size: 20px; font-weight: 500; line-height: 1.2; }
-.sbk-count { flex: 1; font-size: 13px; color: var(--secondary-text-color); }
-.sbk-add { display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 14px 0 10px; border-radius: 18px; border: none;
-           background: color-mix(in srgb, var(--primary-color) 16%, transparent); color: var(--primary-color);
-           font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; --mdc-icon-size: 18px; }
-.sbk-kb { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: none; background: none; padding: 0;
-          color: var(--secondary-text-color); border-radius: 22px; cursor: pointer; flex: 0 0 44px; --mdc-icon-size: 20px; }
-.sbk-kb:hover, .sbk-kb.on { background: color-mix(in srgb, var(--primary-text-color) 10%, transparent); }
-.sbk-row { position: relative; display: flex; align-items: center; gap: 4px; padding: 0 4px 0 12px; border-top: 1px solid var(--divider-color); min-height: 68px; }
-.sbk-row.off .sbk-open { opacity: .5; }
-.sbk-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 10px 0; border: none; background: none;
-            text-align: left; color: inherit; font: inherit; cursor: pointer; border-radius: 8px; }
-.sbk-ico { width: 40px; height: 40px; border-radius: 20px; display: flex; align-items: center; justify-content: center; flex: 0 0 40px; --mdc-icon-size: 22px; }
-.sbk-ico.armed { background: color-mix(in srgb, var(--primary-color) 16%, transparent); color: var(--primary-color); }
-.sbk-ico.run { background: color-mix(in srgb, var(--success-color, #43a047) 20%, transparent); color: var(--success-color, #43a047); }
-.sbk-ico.idle { background: color-mix(in srgb, var(--primary-text-color) 7%, transparent); color: var(--secondary-text-color); }
-.sbk-ico.warn { background: color-mix(in srgb, var(--warning-color, #ffa600) 18%, transparent); color: var(--warning-color, #ffa600); }
-.sbk-ico.bad { background: color-mix(in srgb, var(--error-color, #db4437) 20%, transparent); color: var(--error-color, #db4437); }
-.sbk-txt { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.sbk-t { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--primary-text-color); }
-.sbk-s { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; font-size: 13px; line-height: 1.35; color: var(--secondary-text-color); }
-.sbk-chip { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; flex: 0 0 auto;
-            background: color-mix(in srgb, var(--primary-color) 16%, transparent); color: var(--primary-color); }
-.sbk-dot { width: 3px; height: 3px; border-radius: 2px; background: var(--secondary-text-color); opacity: .7; flex: 0 0 3px; }
-.sbk-m { font-size: 12.5px; line-height: 1.35; white-space: normal; }
-.sbk-m.bad { color: var(--error-color, #db4437); }
-.sbk-m.warn { color: var(--warning-color, #ffa600); }
-.sbk-sw { position: relative; width: 40px; height: 24px; flex: 0 0 40px; margin: 0 4px; }
-.sbk-sw input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; z-index: 1; }
-.sbk-sw span { position: absolute; inset: 0; border-radius: 12px; background: var(--disabled-color, #9e9e9e); pointer-events: none; transition: background .15s; }
-.sbk-sw span::after { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; border-radius: 9px; background: #fff; transition: left .15s; }
-.sbk-sw input:checked + span { background: var(--primary-color); }
-.sbk-sw input:checked + span::after { left: 19px; }
-.sbk-sw input:focus-visible + span { outline: 2px solid var(--primary-color); outline-offset: 2px; }
-.sbk-menu { position: absolute; right: 8px; top: 52px; z-index: 5; min-width: 196px; padding: 6px 0; display: flex; flex-direction: column;
-            background: var(--card-background-color, #fff); border: 1px solid var(--divider-color); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
-.sbk-menu button { display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 16px; border: none; border-radius: 0; background: none;
-                   color: var(--primary-text-color); font: inherit; font-size: 14px; text-align: left; cursor: pointer; --mdc-icon-size: 18px; }
-.sbk-menu button:hover { background: color-mix(in srgb, var(--primary-text-color) 8%, transparent); }
-.sbk-menu button:disabled { opacity: .45; cursor: default; }
-.sbk-menu .del { color: var(--error-color, #db4437); }
-.sbk-menu hr { border: none; border-top: 1px solid var(--divider-color); margin: 4px 0; }
-.sbk-head .sbk-menu { top: 50px; }
-.sbk-hwrap { position: relative; }
-.sbk-confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 12px 12px 16px; min-height: 68px; box-sizing: border-box;
-               border-top: 1px solid var(--divider-color); background: color-mix(in srgb, var(--error-color, #db4437) 10%, transparent); }
-.sbk-confirm p { margin: 0; flex: 1 1 180px; font-size: 14px; }
-.sbk-btn { height: 36px; padding: 0 16px; border-radius: 18px; border: 1px solid var(--divider-color); background: none;
-           color: var(--primary-text-color); font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; }
-.sbk-btn.danger { background: var(--error-color, #db4437); border-color: var(--error-color, #db4437); color: #fff; }
-.sbk-empty { color: var(--secondary-text-color); padding: 12px 16px 16px; border-top: 1px solid var(--divider-color); }
-.sbk-note { color: var(--secondary-text-color); font-size: 13px; padding: 8px 16px 12px; border-top: 1px solid var(--divider-color); }
-`;
-const KB_ICON = `<ha-icon icon="mdi:dots-vertical"></ha-icon>`;
-const kitMenu = (label, items) => `<div class="sbk-menu" role="menu" aria-label="${esc(label)}">${items.map((it) => it === "-" ? "<hr>"
-  : `<button role="menuitem" data-act="${esc(it.act)}" class="${it.danger ? "del" : ""}" ${it.disabled ? "disabled" : ""}><ha-icon icon="${esc(it.icon)}"></ha-icon>${esc(it.label)}</button>`).join("")}</div>`;
-
+// ---- the shared SB row style: window.SBKit, from the SB UI Kit integration ----------
+// One copy of the CSS + menu helpers for sb-scheduler-card, sb-watch-card and sb-background,
+// loaded on every page by the sb_ui_kit integration (a manifest dependency of sb_scheduler,
+// sb_watch and sb_background). This card only waits for it and adopts its stylesheet.
+const kit = () => (window.SBKit && window.SBKit.api >= 1 ? window.SBKit : null);
+let kitPromise = null;
+const whenKit = () => kitPromise || (kitPromise = new Promise((resolve) => {
+  if (kit()) { resolve(kit()); return; }
+  const on = () => { if (kit()) { window.removeEventListener("sb-ui-kit-ready", on); resolve(kit()); } };
+  window.addEventListener("sb-ui-kit-ready", on);
+  setTimeout(() => resolve(kit()), 15000);     // still null: not installed
+}));
+const KIT_MISSING = `<div style="padding: 16px; color: var(--error-color)">The <b>SB UI Kit</b> integration is not loaded — install “SB UI Kit” from HACS and restart Home Assistant.</div>`;
 
 // When a step last ran: "today 6:34 PM", "yesterday 7:12 AM", "Mon 6:30 AM", "Oct 3".
 const lastText = (iso) => {
@@ -722,6 +670,20 @@ class SbSchedulerCard extends HTMLElement {
   }
 
   // --- rendering ----------------------------------------------------------
+  /** The shared style is in: adopt its sheet (once per shadow root) and go on. Not yet: show
+   *  "Loading…" and render again when the kit arrives — or say it is not installed. */
+  _kitReady() {
+    const K = kit();
+    if (K) {
+      if (K.sheet && !this.shadowRoot.adoptedStyleSheets.includes(K.sheet)) this.shadowRoot.adoptedStyleSheets = [...this.shadowRoot.adoptedStyleSheets, K.sheet];
+      return true;
+    }
+    if (!this._kitWaiting) { this._kitWaiting = true; whenKit().then((k) => { this._kitMissing = !k; if (k) this._render(); else this._kitReady(); }); }
+    const html = this._kitMissing ? KIT_MISSING : `<div style="padding: 16px; color: var(--secondary-text-color)">Loading…</div>`;
+    this.shadowRoot.innerHTML = `<ha-card>${html}</ha-card>`;
+    return false;
+  }
+
   _render() {
     if (!this.shadowRoot) return;
     // The window-level scroll lock belongs to the dialog that is about to be
@@ -731,6 +693,7 @@ class SbSchedulerCard extends HTMLElement {
       this.shadowRoot.innerHTML = "";
       return;
     }
+    if (!this._kitReady()) return;
     // The card body is always the list. Both editors — schedules and
     // day-sets — are modal <dialog>s: showModal() puts them in the browser's
     // top layer, so they overlay the whole page from inside this shadow root
@@ -829,14 +792,14 @@ class SbSchedulerCard extends HTMLElement {
     const rows = this._schedules().map((s) => ({ ...s, label: s.schedule_name || s.friendly_name }))
       .sort((a, b) => String(a.label).localeCompare(String(b.label)));
     const dsName = Object.fromEntries(this._daySets().map((d) => [d.id, d.name]));
-    const headMenu = this._menu === "__head" ? kitMenu("Card actions", [
+    const headMenu = this._menu === "__head" ? kit().menu("Card actions", [
       { act: "ds", icon: "mdi:calendar-multiple", label: "Day types…" },
       { act: "refresh", icon: "mdi:refresh", label: "Recompute day types now" },
     ]) : "";
     const head = `<div class="sbk-head sbk-hwrap"><h2>${esc(this._config.title || "Schedules")}</h2>
       <span class="sbk-count">${rows.length} schedule${rows.length === 1 ? "" : "s"}</span>
       <button class="sbk-add new"><ha-icon icon="mdi:plus"></ha-icon>Add</button>
-      <button class="sbk-kb hkb ${headMenu ? "on" : ""}" aria-label="More: day types, recompute" aria-expanded="${headMenu ? "true" : "false"}">${KB_ICON}</button>${headMenu}
+      <button class="sbk-kb hkb ${headMenu ? "on" : ""}" aria-label="More: day types, recompute" aria-expanded="${headMenu ? "true" : "false"}">${kit().kbIcon}</button>${headMenu}
     </div>`;
     if (!rows.length) return `${head}<div class="sbk-empty">No schedules yet — press Add.</div>`;
     return head + rows.map((s) => {
@@ -859,7 +822,7 @@ class SbSchedulerCard extends HTMLElement {
       const third = nothing ? `<span class="sbk-m warn">Nothing scheduled — no upcoming date for this day type.</span>` : "";
       const ic = this._iconFor(s);
       const chip = `${s.negate ? "not " : ""}${dsName[s.day_set] || s.day_set}`;
-      const menu = this._menu === id ? kitMenu(`${s.label} actions`, [
+      const menu = this._menu === id ? kit().menu(`${s.label} actions`, [
         { act: "edit", icon: "mdi:pencil", label: "Edit" },
         { act: "dup", icon: "mdi:content-copy", label: "Duplicate" },
         { act: "run", icon: "mdi:play", label: "Run now" },
@@ -885,7 +848,7 @@ class SbSchedulerCard extends HTMLElement {
         </button>
         ${multi ? `<button class="sbk-kb disclose" data-id="${esc(id)}" aria-expanded="${shut ? "false" : "true"}" aria-label="${shut ? "Show" : "Hide"} the steps of ${esc(s.label)}"><ha-icon icon="${shut ? "mdi:chevron-down" : "mdi:chevron-up"}"></ha-icon></button>` : ""}
         <label class="sbk-sw"><input type="checkbox" role="switch" class="enable" data-entity="${esc(s.entity_id)}" ${on ? "checked" : ""} aria-label="${esc(s.label)} enabled"><span></span></label>
-        <button class="sbk-kb rkb ${menu ? "on" : ""}" aria-label="More actions for ${esc(s.label)}" aria-expanded="${menu ? "true" : "false"}">${KB_ICON}</button>
+        <button class="sbk-kb rkb ${menu ? "on" : ""}" aria-label="More actions for ${esc(s.label)}" aria-expanded="${menu ? "true" : "false"}">${kit().kbIcon}</button>
         ${menu}
       </div>${stepRows}`;
     }).join("");
@@ -895,12 +858,7 @@ class SbSchedulerCard extends HTMLElement {
     this._menu = id;
     // one outside click / Escape closes it; installed only while a menu is open
     this._unMenu?.();
-    if (id) {
-      const away = (e) => { if (!e.composedPath().some((n) => n.classList?.contains("sbk-menu") || n.classList?.contains("sbk-kb"))) this._setMenu(null); };
-      const esc_ = (e) => { if (e.key === "Escape") this._setMenu(null); };
-      setTimeout(() => { window.addEventListener("click", away, true); window.addEventListener("keydown", esc_, true); });
-      this._unMenu = () => { window.removeEventListener("click", away, true); window.removeEventListener("keydown", esc_, true); this._unMenu = null; };
-    }
+    if (id) { const off = kit().away(() => this._setMenu(null)); this._unMenu = () => { off(); this._unMenu = null; }; }
     this._render();
   }
 
@@ -1880,17 +1838,12 @@ class SbSchedulerCard extends HTMLElement {
   }
 }
 
-const STYLE = KIT_CSS + `
+const STYLE = `
 :host { display: block; }
 /* Native select popups ignore the page theme unless told otherwise. */
 :host { color-scheme: light dark; }
 .card-header { font-size: 1.25rem; padding: 12px 16px 0; margin: 0; }
 .body { padding: 0 0 4px; }
-.sbk-chip.neg { background: none; border: 1px solid var(--primary-color); padding: 1px 7px; }
-.sbk-step { display: flex; align-items: center; gap: 4px; padding: 0 4px 0 64px; min-height: 52px; border-top: 1px solid var(--divider-color);
-            background: color-mix(in srgb, var(--primary-text-color) 2.5%, transparent); }
-.sbk-step.off .sbk-txt { opacity: .5; }
-.sbk-step .sbk-t { font-size: 14px; }
 .empty { color: var(--secondary-text-color); padding: 12px 0; line-height: 1.5; }
 .row { padding: 10px 0; border-bottom: 1px solid var(--divider-color); }
 .row.disabled .name, .row.disabled .meta, .row.disabled .steps { opacity: .55; }

@@ -398,5 +398,9 @@ next runs (`nextText`) · chevron (multi-step only; the collapsed set in localSt
 remove_schedule). Tap the row = edit. Multi-step schedules list their steps under the row:
 name, times · next · last (`lastText`), step toggle, ▶ Run now. A one-step schedule shows no
 step row (its time is in the summary). Verified headless on the live schedules, no errors.
-Headless pages show lock/valve icons as HA's bookmark placeholder (domain icons not loaded in
-a bare test page) — real dashboards show the right ones, as the old cards did.
+A test card on document.body shows lock/valve icons as HA's BOOKMARK placeholder: it sits outside
+HA's Lit context providers. Mount test cards inside `hui-view` — there the icons are right.
+
+## v0.18.0 (2026-10-14) — the kit is shared at run time
+
+The row kit copy (and the step / hollow-chip rules, moved into the kit) is gone: the card uses the shared row style from the SB UI Kit integration (window.SBKit) at run time instead of carrying its own copy; requires sb_ui_kit (manifest dependency). Waits ("Loading…") if it loads first; "not loaded" after 15 s.
