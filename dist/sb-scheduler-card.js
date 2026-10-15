@@ -13,7 +13,7 @@
  */
 
 const CARD = "sb-scheduler-card";
-const VERSION = "0.18.0";
+const VERSION = "0.18.1";
 
 // "sunset", "sunset+00:15:00", "sunrise-01:30" — must survive a round-trip
 // through the editor.
@@ -798,8 +798,8 @@ class SbSchedulerCard extends HTMLElement {
     ]) : "";
     const head = `<div class="sbk-head sbk-hwrap"><h2>${esc(this._config.title || "Schedules")}</h2>
       <span class="sbk-count">${rows.length} schedule${rows.length === 1 ? "" : "s"}</span>
-      <button class="sbk-add new"><ha-icon icon="mdi:plus"></ha-icon>Add</button>
-      <button class="sbk-kb hkb ${headMenu ? "on" : ""}" aria-label="More: day types, recompute" aria-expanded="${headMenu ? "true" : "false"}">${kit().kbIcon}</button>${headMenu}
+      <button class="sbk-add new" title="Add a schedule"><ha-icon icon="mdi:plus"></ha-icon>Add</button>
+      <button class="sbk-kb hkb ${headMenu ? "on" : ""}" aria-label="More: day types, recompute" title="More: day types, recompute" aria-expanded="${headMenu ? "true" : "false"}">${kit().kbIcon}</button>${headMenu}
     </div>`;
     if (!rows.length) return `${head}<div class="sbk-empty">No schedules yet — press Add.</div>`;
     return head + rows.map((s) => {
@@ -836,19 +836,19 @@ class SbSchedulerCard extends HTMLElement {
         if (step.last_triggered) bits.push(`last ${lastText(step.last_triggered)}`);
         return `<div class="sbk-step ${stepOn && on ? "" : "off"}">
           <div class="sbk-txt" style="flex: 1"><span class="sbk-t">${esc(step.name)}</span><span class="sbk-s">${esc(bits.join(" · "))}</span></div>
-          <label class="sbk-sw"><input type="checkbox" role="switch" class="step-enable" data-id="${esc(id)}" data-step="${esc(step.step_id)}" ${stepOn ? "checked" : ""} aria-label="${esc(step.name)} enabled"><span></span></label>
+          <label class="sbk-sw"><input type="checkbox" role="switch" class="step-enable" data-id="${esc(id)}" data-step="${esc(step.step_id)}" ${stepOn ? "checked" : ""} aria-label="${esc(step.name)} enabled" title="${stepOn ? "Step on — click to turn this step off" : "Step off — click to turn it on"}"><span></span></label>
           <button class="sbk-kb run" data-entity="${esc(s.entity_id)}" data-step="${esc(step.step_id)}" aria-label="Run ${esc(step.name)} now" title="Run this step's actions now, ignoring the day type"><ha-icon icon="mdi:play"></ha-icon></button>
         </div>`;
       }).join("") : "";
       return `<div class="sbk-row ${on ? "" : "off"}" data-id="${esc(id)}">
-        <button class="sbk-open" aria-label="Edit ${esc(s.label)}">
+        <button class="sbk-open" aria-label="Edit ${esc(s.label)}" title="Edit ${esc(s.label)}">
           <span class="sbk-ico ${tint}">${ic.entity ? `<span class="ph" data-ent="${esc(ic.entity)}"></span>` : `<ha-icon icon="${esc(ic.icon)}"></ha-icon>`}</span>
           <span class="sbk-txt"><span class="sbk-t">${esc(s.label)}</span>
             <span class="sbk-s"><span class="sbk-chip ${s.negate ? "neg" : ""}">${esc(chip)}</span>${esc(doing)}</span>${third}</span>
         </button>
-        ${multi ? `<button class="sbk-kb disclose" data-id="${esc(id)}" aria-expanded="${shut ? "false" : "true"}" aria-label="${shut ? "Show" : "Hide"} the steps of ${esc(s.label)}"><ha-icon icon="${shut ? "mdi:chevron-down" : "mdi:chevron-up"}"></ha-icon></button>` : ""}
-        <label class="sbk-sw"><input type="checkbox" role="switch" class="enable" data-entity="${esc(s.entity_id)}" ${on ? "checked" : ""} aria-label="${esc(s.label)} enabled"><span></span></label>
-        <button class="sbk-kb rkb ${menu ? "on" : ""}" aria-label="More actions for ${esc(s.label)}" aria-expanded="${menu ? "true" : "false"}">${kit().kbIcon}</button>
+        ${multi ? `<button class="sbk-kb disclose" data-id="${esc(id)}" aria-expanded="${shut ? "false" : "true"}" aria-label="${shut ? "Show" : "Hide"} the steps of ${esc(s.label)}" title="${shut ? "Show" : "Hide"} the steps"><ha-icon icon="${shut ? "mdi:chevron-down" : "mdi:chevron-up"}"></ha-icon></button>` : ""}
+        <label class="sbk-sw"><input type="checkbox" role="switch" class="enable" data-entity="${esc(s.entity_id)}" ${on ? "checked" : ""} aria-label="${esc(s.label)} enabled" title="${on ? "On — click to turn this schedule off" : "Off — click to turn it on"}"><span></span></label>
+        <button class="sbk-kb rkb ${menu ? "on" : ""}" aria-label="More actions for ${esc(s.label)}" title="More: duplicate, run now, delete" aria-expanded="${menu ? "true" : "false"}">${kit().kbIcon}</button>
         ${menu}
       </div>${stepRows}`;
     }).join("");
